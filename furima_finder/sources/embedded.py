@@ -36,6 +36,10 @@ STATUS_KEYS = ("status", "itemStatus", "sellStatus", "saleStatus", "availability
 CONDITION_KEYS = ("condition", "itemCondition", "conditionName", "itemConditionName", "conditionText")
 SOLD_WORDS = ("sold", "closed", "trading", "売り切れ", "outofstock", "soldout")
 _CONDITION_BY_LABEL = {text.normalize(label): number for number, label in CONDITION_LABELS.items()}
+# Yahoo!フリマ・Yahoo!オークション系の状態コード
+_CONDITION_BY_LABEL.update({"new": 1, "used10": 2, "used20": 3, "used40": 4, "used60": 5, "used80": 6})
+_PRICE_TEXT = re.compile(r"[¥￥]\s*(\d[\d,]*)|(\d[\d,]*)\s*円")
+_SKIP_LINKS = re.compile(r"javascript:|/search|/login|/signup|/register|/help|/guide|/faq|/articles|/news|/cart")
 _DIGITS = re.compile(r"\d[\d,]*")
 _JST = timezone(timedelta(hours=9))
 
@@ -188,8 +192,65 @@ def _condition(item: dict[str, Any]) -> int | None:
     if isinstance(value, dict):
         value = _first(value, ("name", "label", "text"))
     if isinstance(value, str):
-        return _CONDITION_BY_LABEL.get(text.normalize(value.strip()))
+        return _CONDITION_BY_LABEL.get(text.normalize(value.strip()).replace("_", ""))
     return None
+
+
+# ---------------------------------------------------------------- HTML から読む
+
+def _price_in(value: str) -> int | None:
+    match = _PRICE_TEXT.search(value)
+    if not match:
+        return None
+    price = int((match.group(1) or match.group(2)).replace(",", ""))
+    return price if price > 0 else None
+
+
+def _name_from(value: str) -> str:
+    """「1 ミュウex SAR [M6a 129/103] ¥12,800」のような文字から商品名の部分を取り出す。"""
+    match = _PRICE_TEXT.search(value)
+    name = value[: match.start()] if match and match.start() > 0 else _PRICE_TEXT.sub(" ", value)
+    name = re.sub(r"^\s*\d{1,3}\s+", "", name)  # ランキングの順位
+    name = re.sub(r"(最安値|販売価格|価格|即購入可)\s*$", "", name.strip())
+    return " ".join(name.split())[:150]
+
+
+def extract_link_cards(html: str, base_url: str) -> list[dict[str, Any]]:
+    """商品名と価格が入ったリンク（商品カード）を HTML から探す。JSON に商品がないページ用。"""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    cards: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for anchor in soup.find_all("a", href=True):
+        href = anchor["href"].strip()
+        if not href or href.startswith("#") or _SKIP_LINKS.search(href):
+            continue
+        url = urljoin(base_url, href)
+        if url in seen:
+            continue
+        block, content = anchor, anchor.get_text(" ", strip=True)
+        price = _price_in(content)
+        parent = anchor.parent
+        for _ in range(2):  # 価格がリンクの外（すぐ外側の枠）に書かれている場合
+            if price is not None or parent is None:
+                break
+            parent_text = parent.get_text(" ", strip=True)
+            if len(parent_text) <= 400:
+                block, content, price = parent, parent_text, _price_in(parent_text)
+            parent = parent.parent
+        name = _name_from(content) if price is not None else ""
+        if price is None or len(name) < 2:
+            continue
+        image = block.find("img")
+        seen.add(url)
+        cards.append({
+            "name": name,
+            "price": price,
+            "url": url,
+            "image": (image.get("src") or image.get("data-src")) if image is not None else None,
+        })
+    return cards
 
 
 def _sold(item: dict[str, Any]) -> bool:
@@ -255,6 +316,34 @@ def describe_candidates(candidates: list[Candidate], limit: int = 5) -> Iterator
             if key in first:
                 value = json.dumps(first[key], ensure_ascii=False)
                 yield f"  {key} = {value[:80]}"
+        for key, value in first.items():
+            if isinstance(value, dict):
+                yield f"  {key} の中のキー: {', '.join(list(value)[:15])}"
+
+
+def describe_blobs(blobs: list[Any]) -> Iterator[str]:
+    """埋め込み JSON それぞれの種類（JSON-LD の @type）か、最上位のキー。"""
+    for number, blob in enumerate(blobs):
+        if isinstance(blob, dict):
+            kind = blob.get("@type")
+            yield f"JSON #{number}: " + (f"@type={kind}" if kind else f"キー {', '.join(list(blob)[:10])}")
+        elif isinstance(blob, list):
+            yield f"JSON #{number}: 配列（{len(blob)}件）"
+
+
+def describe_link_cards(html: str, base_url: str) -> Iterator[str]:
+    """HTML の中で、価格が入ったリンクの数・URLの形・例を書き出す。"""
+    cards = extract_link_cards(html, base_url)
+    yield f"価格つきのリンク: {len(cards)}件"
+    patterns: dict[str, int] = {}
+    for card in cards:
+        path = re.sub(r"https?://[^/]+", "", card["url"])
+        pattern = "/".join(re.sub(r"\d+", "<数字>", part) for part in path.split("?")[0].split("/")[:3])
+        patterns[pattern] = patterns.get(pattern, 0) + 1
+    for pattern, count in sorted(patterns.items(), key=lambda item: -item[1])[:5]:
+        yield f"  URLの形 {pattern or '/'}: {count}件"
+    for card in cards[:3]:
+        yield f"  例: {card['name'][:50]} … ¥{card['price']:,}  {card['url'][:90]}"
 
 
 class EmbeddedJsonSource:
@@ -270,6 +359,7 @@ class EmbeddedJsonSource:
     supports_details = False
     shipping_included: bool | None = None
     caution: str | None = None
+    read_html_links = False  # JSON に商品がないとき、商品名と価格の入ったリンクを HTML から読む
 
     def __init__(self, http: HttpClient) -> None:
         self.http = http
@@ -286,6 +376,8 @@ class EmbeddedJsonSource:
 
     def parse(self, body: str, query: SearchQuery) -> list[Listing]:
         items = best_item_list(find_item_lists(parse_json_text(body)), text.tokens(query.keyword))
+        if not items and self.read_html_links:
+            items = extract_link_cards(body, self.site)
         listings = []
         for item in items:
             listing = to_listing(

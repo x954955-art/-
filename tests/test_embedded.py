@@ -140,3 +140,38 @@ def test_caution_shows_up_as_a_warning():
     listing = next(item for item in snkr.search(SearchQuery(keyword="SAR")) if item.price == 9900)
     result = evaluate(listing, MarketStats.manual(15000), [], Settings(), dt.now(timezone.utc))
     assert any("スニダンの価格は最安値の目安" in w for w in result.warnings)
+
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [("new", 1), ("used10", 2), ("used20", 3), ("USED_40", 4), ("used60", 5), ("used80", 6), ("未使用に近い", 2), ("良好", None)],
+)
+def test_condition_codes(value, expected):
+    listing = to_listing({"id": "z1", "title": "x SAR", "price": 1, "condition": value}, source="yahoo",
+                         base_url="", url_for_id=str)
+    assert listing.condition == expected
+
+
+def test_snkrdunk_reads_product_links_from_html():
+    from furima_finder.sources.embedded import extract_link_cards
+
+    html = (FIXTURES / "snkrdunk_search_html.html").read_text(encoding="utf-8")
+    cards = extract_link_cards(html, "https://snkrdunk.com")
+    assert [(c["name"], c["price"], c["url"]) for c in cards] == [
+        ("ミュウex SAR [M6a 129/103](拡張パック「30th CELEBRATION」)", 12800, "https://snkrdunk.com/apparels/129103"),
+        ("リザードンex SAR [SV2a 201/165]", 15500, "https://snkrdunk.com/apparels/201165"),
+        ("ナンジャモ SAR [SV2D 096/071]", 9800, "https://snkrdunk.com/apparels/96071"),
+    ]
+    assert cards[0]["image"] == "https://cdn.snkrdunk.com/1.jpg"
+
+    snkr, _ = source(SnkrdunkSource, [Response(html)])
+    listings = snkr.search(SearchQuery(keyword="ポケモンカード SAR"))
+    assert [listing.price for listing in listings] == [12800, 15500, 9800]
+    assert listings[0].url == "https://snkrdunk.com/apparels/129103"
+    assert listings[0].caution
+
+
+def test_html_links_are_not_used_for_json_sites():
+    yahoo, _ = source(YahooFleaSource, [Response((FIXTURES / "snkrdunk_search_html.html").read_text(encoding="utf-8")), Response("{}")])
+    assert yahoo.search(SearchQuery(keyword="SAR")) == []

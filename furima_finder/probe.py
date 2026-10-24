@@ -15,7 +15,13 @@ from .models import Listing, SearchQuery
 from .scoring import yen
 from .sources import MercariSource, RakumaSource, SnkrdunkSource, YahooFleaSource
 from .sources.base import HTML_HEADERS
-from .sources.embedded import describe_candidates, find_item_lists, parse_json_text
+from .sources.embedded import (
+    describe_blobs,
+    describe_candidates,
+    describe_link_cards,
+    find_item_lists,
+    parse_json_text,
+)
 
 _TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _TAGS = re.compile(r"<script.*?</script>|<style.*?</style>|<[^>]+>", re.IGNORECASE | re.DOTALL)
@@ -73,7 +79,12 @@ def run_probe(keyword: str, http: HttpClient, out: TextIO, save_dir: Path) -> No
             if source.name != "rakuma":
                 next_data = "あり" if "__NEXT_DATA__" in body else "なし"
                 out.write(f"      埋め込みJSON: {len(blobs)}個（__NEXT_DATA__ {next_data}）\n")
-                for line in describe_candidates(find_item_lists(blobs)):
+                candidates = find_item_lists(blobs)
+                lines = describe_candidates(candidates) if candidates else describe_blobs(blobs)
+                for line in lines:
+                    out.write(f"      {line}\n")
+            if not listings or source.name == "snkrdunk":
+                for line in describe_link_cards(body, getattr(source, "site", url)):
                     out.write(f"      {line}\n")
             if not listings:
                 for line in _page_summary(body):

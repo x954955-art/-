@@ -9,10 +9,11 @@
 
 [defaults]
 profile = "pokeca"
-# 探すサイト。ラクマ・Yahoo!フリマ・スニダンも探すときは次の行に書き換える（どれも実験的）
-#   sources = ["mercari", "rakuma", "yahoo", "snkrdunk"]
+# 探すサイト（mercari=メルカリ / rakuma=ラクマ / yahoo=Yahoo!フリマ / snkrdunk=スニダン）
 # 相場（売り切れ価格）はメルカリとラクマから調べ、Yahoo!フリマとスニダンは「買う候補」だけを集める
-sources = ["mercari"]
+# スニダンはまだ調整中（実験的）。試すときは次の行に書き換える
+#   sources = ["mercari", "rakuma", "yahoo", "snkrdunk"]
+sources = ["mercari", "rakuma", "yahoo"]
 min_profit = 1000
 min_roi = "15%"
 min_sales = 3

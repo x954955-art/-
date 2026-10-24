@@ -48,7 +48,24 @@ def test_probe_reports_each_site(tmp_path):
     assert "配列 #0.props.pageProps.initialState.search.items（3件）" in report
     assert "  id = \"z100000001\"" in report
     assert "HTTP 503" in report and "ページのタイトル: アクセスが集中しています" in report
-    assert (tmp_path / "yahoo_1.html").exists() and (tmp_path / "snkrdunk_2.html").exists()
+    assert (tmp_path / "yahoo_1.html").exists() and (tmp_path / "snkrdunk_1.html").exists()
+
+
+def test_probe_explains_html_pages(tmp_path):
+    session = Session([
+        ("https://api.mercari.jp", Response('{"items": [], "meta": {}}')),
+        ("https://fril.jp", Response("<html></html>")),
+        ("https://paypayfleamarket.yahoo.co.jp", Response("<html></html>")),
+        ("https://snkrdunk.com", Response((FIXTURES / "snkrdunk_search_html.html").read_text(encoding="utf-8"))),
+    ])
+    out = io.StringIO()
+    run_probe("ポケモンカード SAR", HttpClient(session=session, sleep=lambda s: None, min_interval=0), out, tmp_path)
+    report = out.getvalue()
+    snkrdunk = report.split("■ スニダン")[1]
+    assert "商品として読めた件数: 3件" in snkrdunk
+    assert "JSON #0: @type=BreadcrumbList" in snkrdunk
+    assert "価格つきのリンク: 3件" in snkrdunk
+    assert "URLの形 /apparels/<数字>: 3件" in snkrdunk
 
 
 def test_probe_option_runs_without_keywords(monkeypatch, tmp_path):
