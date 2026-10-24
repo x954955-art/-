@@ -1,0 +1,32 @@
+# furima-finder の検索リストの見本です。コピーして watchlist.toml などの名前で使ってください。
+#   python -m furima_finder --config watchlist.toml --html report.html
+#
+# 値の優先順位: [defaults] < 各 [[search]] < コマンドラインで指定した値
+
+[defaults]
+# 相場より何%以上安ければ候補にするか（"15%"・15・0.15 のどれでも可）
+min_discount = "15%"
+# 相場の計算と候補の両方から外したい語
+exclude = ["ジャンク", "部品取り"]
+# 検索するサイト（mercari / rakuma）。rakuma は実験的
+sources = ["mercari"]
+# 上位何件の出品者評価・説明文を確認するか
+details = 10
+
+[[search]]
+keyword = "Nintendo Switch 有機EL"
+# 本体より安いソフトや周辺機器を除くため、最低価格を入れておくと相場が正確になる
+min_price = 15000
+max_price = 32000
+# new / near-new / good / fair / any
+condition = "good"
+
+[[search]]
+keyword = "iPad mini 6 64GB"
+min_price = 30000
+exclude = ["画面割れ", "アクティベーションロック"]
+
+[[search]]
+keyword = "ポケモンカード 151 BOX シュリンク付き"
+min_discount = "10%"
+sources = ["mercari", "rakuma"]

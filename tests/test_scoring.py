@@ -1,0 +1,115 @@
+from datetime import timedelta
+
+import pytest
+
+from furima_finder import text
+from furima_finder.market import MarketStats
+from furima_finder.models import Seller
+from furima_finder.scoring import Settings, evaluate, format_age, rank
+
+from .conftest import make_listing
+
+TOKENS = text.tokens("Switch 有機EL")
+MARKET = MarketStats.manual(30000)
+
+
+def ev(listing, now, settings=None, market=MARKET):
+    return evaluate(listing, market, TOKENS, settings or Settings(), now)
+
+
+def test_discount_and_reasons(now):
+    result = ev(make_listing(price=24000, condition=2, age=timedelta(hours=1)), now)
+    assert result.recommended
+    assert result.discount == pytest.approx(0.2)
+    assert result.reference_price == 30000
+    assert "相場 ¥30,000 より ¥6,000 安い" in result.reasons
+    assert "未使用に近い" in result.reasons
+    assert "送料込み" in result.reasons
+    assert "出品 1時間前" in result.reasons
+    # 価格 28（20%引き / 40%で満点）+ 状態 13 + 送料 5 + 新しさ 10 + 出品者（不明）7
+    assert result.score == 63
+
+
+def test_cash_on_delivery_is_compared_with_shipping(now):
+    result = ev(make_listing(price=24000, shipping_included=False), now)
+    assert result.effective_price == 24800
+    assert any("着払い" in warning for warning in result.warnings)
+
+
+@pytest.mark.parametrize(
+    "listing, reason",
+    [
+        (make_listing(price=20000, sold=True), "売り切れ・取引中"),
+        (make_listing("じろう様専用 Switch 有機EL", 20000), "専用・購入不可"),
+        (make_listing("Switch 有機EL 箱のみ", 20000), "箱・付属品のみ"),
+        (make_listing("PS5 コントローラー", 20000), "キーワード不一致"),
+        (make_listing(price=28500), "割安ではない"),
+    ],
+)
+def test_exclusions(listing, reason, now):
+    assert ev(listing, now).excluded == reason
+
+
+def test_without_market_nothing_is_recommended(now):
+    assert ev(make_listing(price=1000), now, market=MarketStats(overall=None)).excluded == "相場不明"
+
+
+def test_risk_words_and_auction_are_penalized(now):
+    clean = ev(make_listing(price=20000), now)
+    junk = ev(make_listing("Switch 有機EL ジャンク", 20000), now)
+    unchecked = ev(make_listing("Switch 有機EL 動作未確認", 20000), now)
+    auction = ev(make_listing(price=20000, is_auction=True), now)
+    assert clean.score - junk.score == 30
+    assert clean.score - unchecked.score == 12
+    assert clean.score - auction.score == 20
+    assert "タイトルに「ジャンク」" in junk.warnings
+
+
+def test_seller_ratings_change_the_score(now):
+    trusted = make_listing(price=20000, seller=Seller("s1", good=500, bad=1))
+    newbie = make_listing(price=20000, seller=Seller("s2", good=2))
+    risky = make_listing(price=20000, seller=Seller("s3", good=80, bad=20))
+    shop = make_listing(price=20000, is_shop=True)
+    scores = {name: ev(item, now).score for name, item in
+              {"trusted": trusted, "newbie": newbie, "risky": risky, "shop": shop}.items()}
+    assert scores["trusted"] > scores["shop"] > scores["newbie"] > scores["risky"]
+    assert any("悪い評価が多め" in w for w in ev(risky, now).warnings)
+
+
+def test_description_and_likes_add_warnings(now):
+    listing = make_listing(price=20000, description="動作未確認のため格安です", likes=35)
+    warnings = ev(listing, now).warnings
+    assert "説明文に「動作未確認」" in warnings
+    assert any("いいね35件" in w for w in warnings)
+
+
+def test_too_cheap_listing_gets_a_warning(now):
+    assert any("半額以下" in w for w in ev(make_listing(price=12000), now).warnings)
+
+
+def test_resale_profit(now):
+    settings = Settings(resale=True, fee_rate=0.10, resale_shipping=750)
+    result = ev(make_listing(price=20000), now, settings)
+    assert result.profit == 30000 * 0.9 - 750 - 20000
+
+
+def test_unknown_condition_warns_only_when_filtering(now):
+    listing = make_listing(price=20000, condition=None)
+    assert not any("状態が不明" in w for w in ev(listing, now).warnings)
+    assert any("状態が不明" in w for w in ev(listing, now, Settings(condition_filtered=True)).warnings)
+
+
+def test_rank_orders_by_score_then_discount(now):
+    fresh = make_listing(price=24000, age=timedelta(hours=1))
+    old = make_listing(price=24000, age=timedelta(days=40))
+    cheaper_old = make_listing(price=21000, age=timedelta(days=40))
+    excluded = make_listing(price=29900)
+    ranked = rank([ev(item, now) for item in (old, excluded, cheaper_old, fresh)])
+    assert [r.listing for r in ranked] == [cheaper_old, fresh, old]
+
+
+def test_format_age():
+    assert format_age(timedelta(seconds=10)) == "1分前"
+    assert format_age(timedelta(minutes=59)) == "59分前"
+    assert format_age(timedelta(hours=5)) == "5時間前"
+    assert format_age(timedelta(days=3, hours=2)) == "3日前"

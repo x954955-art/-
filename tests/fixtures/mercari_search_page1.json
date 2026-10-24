@@ -1,0 +1,50 @@
+{
+  "meta": {"nextPageToken": "v1:1", "previousPageToken": "", "numFound": "3"},
+  "items": [
+    {
+      "id": "m10000000001",
+      "sellerId": "123456789",
+      "buyerId": "",
+      "status": "ITEM_STATUS_ON_SALE",
+      "name": "Nintendo Switch 有機ELモデル ホワイト",
+      "price": "29800",
+      "created": "1761280000",
+      "updated": "1761280500",
+      "thumbnails": ["https://static.mercdn.net/thumb/item/webp/m10000000001_1.jpg?1761280000"],
+      "itemType": "ITEM_TYPE_MERCARI",
+      "itemConditionId": "2",
+      "shippingPayerId": "2",
+      "shippingMethodId": "14",
+      "categoryId": "701",
+      "isNoPrice": false,
+      "auction": null
+    },
+    {
+      "id": "2a1B3c4D5e6F7g8H9iJk",
+      "sellerId": "",
+      "status": "ITEM_STATUS_ON_SALE",
+      "name": "【中古】Nintendo Switch 有機EL ネオン",
+      "price": "31500",
+      "created": "1761200000",
+      "updated": "1761200000",
+      "thumbnails": ["https://assets.mercari-shops-static.com/-/small/plain/abc.jpg"],
+      "itemType": "ITEM_TYPE_BEYOND",
+      "itemConditionId": "3",
+      "shippingPayerId": "2",
+      "isNoPrice": false
+    },
+    {
+      "id": "m10000000003",
+      "sellerId": "987654321",
+      "status": "ITEM_STATUS_ON_SALE",
+      "name": "Switch 有機EL 価格相談",
+      "price": "9999999",
+      "created": "1761100000",
+      "thumbnails": [],
+      "itemType": "ITEM_TYPE_MERCARI",
+      "itemConditionId": "3",
+      "shippingPayerId": "1",
+      "isNoPrice": true
+    }
+  ]
+}

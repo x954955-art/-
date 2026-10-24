@@ -1,0 +1,27 @@
+{
+  "meta": {"nextPageToken": "", "previousPageToken": "v1:0", "numFound": "3"},
+  "items": [
+    {
+      "id": "m10000000004",
+      "sellerId": "555555555",
+      "status": "ITEM_STATUS_SOLD_OUT",
+      "name": "Nintendo Switch 有機EL 着払い",
+      "price": "25000",
+      "created": "1760000000",
+      "updated": "1760500000",
+      "thumbnails": ["https://static.mercdn.net/thumb/item/webp/m10000000004_1.jpg"],
+      "itemType": "ITEM_TYPE_MERCARI",
+      "itemConditionId": "4",
+      "shippingPayerId": "1",
+      "auction": {"id": "a1", "bidDeadline": "2026-10-25T12:00:00Z", "totalBid": "3", "highestBid": "25000"}
+    },
+    {
+      "id": "m10000000001",
+      "sellerId": "123456789",
+      "status": "ITEM_STATUS_ON_SALE",
+      "name": "Nintendo Switch 有機ELモデル ホワイト（ページ重複）",
+      "price": "29800",
+      "itemType": "ITEM_TYPE_MERCARI"
+    }
+  ]
+}

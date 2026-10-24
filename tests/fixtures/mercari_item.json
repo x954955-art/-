@@ -1,0 +1,22 @@
+{
+  "result": "OK",
+  "data": {
+    "id": "m10000000001",
+    "status": "on_sale",
+    "name": "Nintendo Switch 有機ELモデル ホワイト",
+    "price": 29800,
+    "description": "半年ほど使用しました。動作確認済みです。",
+    "num_likes": 12,
+    "num_comments": 1,
+    "item_condition": {"id": 2, "name": "未使用に近い"},
+    "shipping_payer": {"id": 2, "name": "送料込み(出品者負担)", "code": "seller"},
+    "seller": {
+      "id": 123456789,
+      "name": "テスト出品者",
+      "num_sell_items": 87,
+      "ratings": {"good": 210, "normal": 0, "bad": 1},
+      "num_ratings": 211,
+      "star_rating_score": 5
+    }
+  }
+}
