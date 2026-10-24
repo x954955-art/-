@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import tomllib
+import webbrowser
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
@@ -203,10 +204,15 @@ def _coerce_entry(entry: Any, where: str) -> dict[str, Any]:
 
 def load_config(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        # メモ帳が付けることのある BOM は読み飛ばす
+        data = tomllib.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError as exc:
         raise ConfigError(f"設定ファイルが見つかりません: {path}") from exc
-    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+    except UnicodeDecodeError as exc:
+        raise ConfigError(
+            f"設定ファイル {path} を UTF-8 で保存し直してください（メモ帳なら「名前を付けて保存」で文字コードを UTF-8 に）"
+        ) from exc
+    except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"設定ファイルの書式が正しくありません: {exc}") from exc
     unknown = sorted(set(data) - {"defaults", "search"})
     if unknown:
@@ -357,6 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
     resale.add_argument("--min-sales", type=_arg(_non_negative, "0以上の整数"), metavar="件", help="直近30日の販売数がこれ未満なら候補にしない（既定 3）")
     resale.add_argument("--fee-rate", type=_arg(parse_ratio, "0.1・10% のような形"), metavar="割合", help="販売手数料（既定 10%%）")
     resale.add_argument("--resale-shipping", type=_arg(_non_negative, "0以上の整数"), metavar="円", help="売るときの送料（既定 750円、pokeca は 230円・BOXは520円以上）")
+    output.add_argument("--open", action="store_true", help="保存したHTMLレポートをブラウザで開く（監視モードでは最初の1回だけ。--html がなければ report.html に保存）")
     output.add_argument("--no-color", action="store_true", help="色を付けずに表示する")
 
     watch = parser.add_argument_group("監視")
@@ -404,10 +411,18 @@ def run_all(
     return [run_plan(plan, sources, progress=progress) for plan in plans]
 
 
-def _save_files(results: list[SearchResult], args: argparse.Namespace, progress: Callable[[str], None]) -> None:
+def _save_files(
+    results: list[SearchResult],
+    args: argparse.Namespace,
+    progress: Callable[[str], None],
+    *,
+    open_browser: bool = False,
+) -> None:
     if args.html:
         write_html(results, args.html, top=args.top)
         progress(f"HTMLレポートを保存しました: {args.html}")
+        if open_browser:
+            webbrowser.open(Path(args.html).resolve().as_uri())
     if args.csv:
         write_csv(results, args.csv)
         progress(f"CSVを保存しました: {args.csv}")
@@ -476,7 +491,7 @@ def _watch(
                     progress(f"{datetime.now(JST):%H:%M} 新着の候補はありませんでした")
             for result in results:
                 seen.update((e.listing.key, e.listing.price) for e in result.recommendations)
-            _save_files(results, args, progress)
+            _save_files(results, args, progress, open_browser=args.open and first)
             first = False
             sleep(minutes * 60)
     except KeyboardInterrupt:
@@ -498,6 +513,8 @@ def main(
     _prepare_console(stderr)
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.open and not args.html:
+        args.html = Path("report.html")
     try:
         plans = build_plans(args)
     except ConfigError as exc:
@@ -523,7 +540,7 @@ def main(
         print_result(result, stdout, top=args.top, color=color)
         _notify(args.webhook, "【フリマおすすめ】", result.plan.keyword, result.recommendations[:5], progress)
     stdout.flush()
-    _save_files(results, args, progress)
+    _save_files(results, args, progress, open_browser=args.open)
     if any(result.fetch_failed for result in results):
         progress("取得に失敗した検索があります。インターネット接続や、サイトの仕様変更がないかを確認してください。")
     return _exit_code(results)

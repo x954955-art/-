@@ -1,0 +1,2 @@
+# Windows のバッチファイルは改行コード CRLF のまま配布する
+*.bat -text

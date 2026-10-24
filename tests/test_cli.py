@@ -188,7 +188,7 @@ def test_config_errors(tmp_path, content, message):
         cli.load_config(path)
 
 
-@pytest.mark.parametrize("name", ["watchlist.example.toml", "watchlist.pokeca.example.toml"])
+@pytest.mark.parametrize("name", ["watchlist.example.toml", "watchlist.pokeca.example.toml", "pokeca.toml"])
 def test_example_configs_are_valid(name):
     from pathlib import Path
 
@@ -309,3 +309,55 @@ def test_scan_end_to_end_output(tmp_path):
     assert "仕入れ ¥6,000 → 利益 ¥2,770（利益率 46%）" in out
     assert "売値の目安 ¥10,000（未鑑定の相場・直近14日の中央値）" in out
     assert "[1/1] 201/165 の売り切れ価格を取得中" in err
+
+
+
+def test_open_shows_the_report_in_the_browser_once(tmp_path, monkeypatch):
+    opened = []
+    monkeypatch.setattr(cli.webbrowser, "open", opened.append)
+    html_path = tmp_path / "r.html"
+    code, _, _ = run(["Switch 有機EL", "--html", str(html_path), "--open"])
+    assert code == 0
+    assert opened == [html_path.resolve().as_uri()]
+
+    opened.clear()
+    calls = []
+
+    def fake_sleep(seconds):
+        calls.append(seconds)
+        if len(calls) == 2:
+            raise KeyboardInterrupt
+
+    run(["Switch 有機EL", "--html", str(html_path), "--open", "--watch", "15"], sleep=fake_sleep)
+    assert opened == [html_path.resolve().as_uri()]  # 監視中は最初の1回だけ
+
+
+def test_open_without_html_uses_default_name(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    opened = []
+    monkeypatch.setattr(cli.webbrowser, "open", opened.append)
+    run(["Switch 有機EL", "--open"])
+    assert (tmp_path / "report.html").exists()
+    assert opened == [(tmp_path / "report.html").as_uri()]
+
+
+def test_config_with_bom_and_wrong_encoding(tmp_path):
+    bom = tmp_path / "bom.toml"
+    bom.write_bytes('[[search]]\nkeyword = "ポケモンカード SAR"\n'.encode("utf-8-sig"))
+    assert cli.load_config(bom)[1][0]["keyword"] == "ポケモンカード SAR"
+    sjis = tmp_path / "sjis.toml"
+    sjis.write_bytes('[[search]]\nkeyword = "ポケモンカード"\n'.encode("cp932"))
+    with pytest.raises(cli.ConfigError, match="UTF-8 で保存し直して"):
+        cli.load_config(sjis)
+
+
+@pytest.mark.parametrize("name", ["pokeca_search.bat", "pokeca_watch.bat"])
+def test_windows_batch_files(name):
+    from pathlib import Path
+
+    raw = (Path(__file__).parent.parent / name).read_bytes()
+    raw.decode("ascii")  # 文字コードの違いで壊れないよう ASCII だけで書く
+    assert raw.count(b"\r\n") == raw.count(b"\n")  # 改行は CRLF
+    text = raw.decode("ascii")
+    assert 'cd /d "%~dp0"' in text  # ダブルクリックしても自分のフォルダで動く
+    assert "--config pokeca.toml" in text and "--open" in text

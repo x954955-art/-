@@ -1,0 +1,31 @@
+# ダブルクリックで使うとき（pokeca_search.bat / pokeca_watch.bat）の検索条件です。
+# メモ帳で開いて書き換え、上書き保存すると次から反映されます。
+#
+#   keyword    : 探す範囲（scan = true のとき）か、狙うカードの名前・レアリティ・番号
+#   min_price  : 仕入れ値の下限（円）  max_price : 仕入れ値の上限（円）
+#   min_profit : これ以上の利益（手数料10%と送料を引いたあと）が出るものだけ表示（円）
+#   min_roi    : 利益率（利益 ÷ 仕入れ値）の下限
+#   min_sales  : 直近30日にこれ以上売れているカードだけ表示
+
+[defaults]
+profile = "pokeca"
+min_profit = 1000
+min_roi = "15%"
+min_sales = 3
+
+[[search]]
+keyword = "ポケモンカード SAR"
+scan = true
+min_price = 2000
+max_price = 30000
+
+# ほかのレアリティも探すときは、下の5行の先頭の「# 」を消して上書き保存する
+# [[search]]
+# keyword = "ポケモンカード SR"
+# scan = true
+# min_price = 2000
+# max_price = 30000
+
+# 特定のカードを見張るときの例（先頭の「# 」を消す）
+# [[search]]
+# keyword = "リザードンex SAR 201/165"
