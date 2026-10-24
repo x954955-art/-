@@ -54,6 +54,9 @@ class Profile:
             title, query_tokens, strong_extra=self.strong_risk_words, mild_extra=self.mild_risk_words
         )
 
+    def is_strong_risk(self, word: str) -> bool:
+        return word in text.STRONG_RISK_WORDS or word in self.strong_risk_words
+
     def description_risks(self, description: str, query_tokens: list[str]) -> list[str]:
         return text.description_risks(
             description, query_tokens, extra_words=self.strong_risk_words + self.mild_risk_words

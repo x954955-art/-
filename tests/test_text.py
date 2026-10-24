@@ -58,3 +58,24 @@ def test_risk_level(title, query, expected):
 def test_description_risks_keeps_the_longest_word_and_skips_negations():
     description = "動作未確認です。目立つ破損なし。ジャンクではありません。"
     assert text.description_risks(description, []) == ["動作未確認"]
+
+
+@pytest.mark.parametrize(
+    "description, expected",
+    [
+        ("折れや水濡れはありません。", []),
+        ("目立った折れ・水濡れなどはございません", []),
+        ("折れもなく綺麗です", []),
+        ("水濡れはしていません", []),
+        ("ジャンク品ではありません", []),
+        ("折れていないです", []),
+        ("初期傷はありますが目立たない程度です", ["初期傷"]),
+        ("白欠けが少しあります", ["白欠け"]),
+        ("折れあり、返品はできません", ["折れ"]),
+        ("折れと水濡れがあります", ["折れ", "水濡れ"]),
+    ],
+)
+def test_description_negations(description, expected):
+    from furima_finder.profiles import POKECA
+
+    assert POKECA.description_risks(description, []) == expected

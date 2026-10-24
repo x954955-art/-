@@ -226,3 +226,29 @@ def test_auctions_rank_after_buy_now_listings(now):
     buy_now = resale_ev(make_listing("リザードンex SAR 201/165", 7500), now)
     assert auction.score > buy_now.score
     assert rank([auction, buy_now]) == [buy_now, auction]
+
+
+def test_heavy_damage_in_description_is_penalized(now):
+    clean = ev(make_listing(price=20000, description="目立った傷や汚れはありません"), now)
+    broken = ev(make_listing(price=20000, description="角に破損があります"), now)
+    mild = ev(make_listing(price=20000, description="動作未確認です"), now)
+    assert not any("説明文" in w for w in clean.warnings)
+    assert "説明文に「破損」" in broken.warnings
+    assert clean.score - broken.score == 15
+    assert "説明文に「動作未確認」" in mild.warnings and mild.score == clean.score  # 軽い注意は減点しない
+
+
+def test_damaged_cards_are_valued_lower_for_resale(now):
+    # 実際に出た例: 相場 5,090円の SAR が「やや傷や汚れあり」で 2,700円、説明文に「折れ」「水濡れ」
+    market = card_market(median=5090, recent=None, sales=6, trend=None, q1=4900, q3=5300)
+    listing = make_listing(
+        "パラソルおねえさん SAR SV3a レイジングサーフ 089/062",
+        2700,
+        condition=4,
+        description="折れと水濡れがあります",
+    )
+    result = resale_ev(listing, now, market)
+    assert result.expected_sale == round(5090 * 0.7)
+    assert "×70%・やや傷や汚れありのため" in result.reasons[0]
+    assert result.excluded == "利益が少ない"
+    assert "説明文に「折れ」" in result.warnings and "説明文に「水濡れ」" in result.warnings

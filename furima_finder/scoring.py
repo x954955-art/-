@@ -50,9 +50,13 @@ RESALE_CONDITION_POINTS = {1: 10, 2: 9, 3: 7, 4: 3, 5: 1, 6: 0}
 UNKNOWN_RESALE_CONDITION_POINTS = 5
 RESALE_SELLER_POINTS = {"top": 10, "good": 8, "ok": 5, "few": 3, "bad": 0, "shop": 7, "unknown": 5}
 
+# 傷・汚れありは相場（主に美品の価格）どおりには売れないので、転売の売値を割り引く
+CONDITION_SALE_FACTORS = {4: 0.7, 5: 0.5, 6: 0.3}
+
 # 共通の減点
 STRONG_RISK_PENALTY = 30
 MILD_RISK_PENALTY = 12
+DESCRIPTION_RISK_PENALTY = 15  # 説明文に「折れ」「水濡れ」「ジャンク」など重い注意ワード
 AUCTION_PENALTY = 20  # 表示価格は途中の入札額で、最終的には相場近くまで上がりやすい
 POPULAR_LIKES = 20
 
@@ -190,6 +194,10 @@ def _resale_points(result: Evaluation, stats: PriceStats, settings: Settings, pr
         sale, how = stats.recent_median, "直近14日の中央値"
     else:
         sale, how = stats.median, "中央値"
+    factor = CONDITION_SALE_FACTORS.get(listing.condition)
+    if factor:
+        sale = round(sale * factor)
+        how += f"×{factor:.0%}・{listing.condition_label}のため"
     shipping = profile.resale_shipping(listing, settings.resale_shipping)
     result.expected_sale = sale
     result.profit = round(sale * (1 - settings.fee_rate)) - shipping - result.effective_price
@@ -269,7 +277,7 @@ def evaluate(
         points += condition_table[listing.condition]
         result.reasons.append(listing.condition_label or "")
         if resale and listing.condition >= 4:
-            result.warnings.append("傷・汚れありの状態：相場どおりの値段では売れない可能性")
+            result.warnings.append("傷・汚れありの状態：売値を低めに見積もっています。実物の傷を写真でよく確認")
     else:
         points += UNKNOWN_RESALE_CONDITION_POINTS if resale else UNKNOWN_CONDITION_POINTS
         if settings.condition_filtered:
@@ -303,9 +311,14 @@ def evaluate(
         points -= MILD_RISK_PENALTY
         result.warnings.append(f"タイトルに「{word}」")
     if listing.description:
-        for found_word in profile.description_risks(listing.description, query_tokens):
-            if level == 0 or found_word != word:
-                result.warnings.append(f"説明文に「{found_word}」")
+        found_words = [
+            found_word
+            for found_word in profile.description_risks(listing.description, query_tokens)
+            if level == 0 or found_word != word
+        ]
+        result.warnings.extend(f"説明文に「{found_word}」" for found_word in found_words)
+        if any(profile.is_strong_risk(found_word) for found_word in found_words):
+            points -= DESCRIPTION_RISK_PENALTY
     if listing.is_auction:
         points -= AUCTION_PENALTY
         details = [f"入札{listing.auction_bids}件"] if listing.auction_bids is not None else []
