@@ -144,9 +144,29 @@ def _int(value: Any) -> int | None:
         return None
 
 
+def _float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _timestamp(value: Any) -> datetime | None:
     seconds = _int(value)
     return datetime.fromtimestamp(seconds, tz=timezone.utc) if seconds else None
+
+
+def _datetime(value: Any) -> datetime | None:
+    """"2026-10-25T12:00:00Z" のような日時か、UNIX時刻の文字列を読む。"""
+    if not isinstance(value, str) or not value:
+        return None
+    if value.isdigit():
+        return _timestamp(value)
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 def parse_search_item(raw: dict[str, Any]) -> Listing | None:
@@ -159,6 +179,7 @@ def parse_search_item(raw: dict[str, Any]) -> Listing | None:
     condition = _int(raw.get("itemConditionId"))
     thumbnails = raw.get("thumbnails") or []
     auction = raw.get("auction")
+    is_auction = isinstance(auction, dict) and bool(auction.get("id") or auction.get("bidDeadline"))
     return Listing(
         source="mercari",
         id=str(item_id),
@@ -173,7 +194,9 @@ def parse_search_item(raw: dict[str, Any]) -> Listing | None:
         thumbnail=thumbnails[0] if thumbnails and isinstance(thumbnails[0], str) else None,
         seller_id=str(raw["sellerId"]) if raw.get("sellerId") else None,
         is_shop=is_shop,
-        is_auction=isinstance(auction, dict) and bool(auction.get("id") or auction.get("bidDeadline")),
+        is_auction=is_auction,
+        auction_end=_datetime(auction.get("bidDeadline")) if is_auction else None,
+        auction_bids=_int(auction.get("totalBid")) if is_auction else None,
     )
 
 
@@ -198,7 +221,10 @@ def apply_item_detail(listing: Listing, data: dict[str, Any]) -> None:
         listing.shipping_included = SHIPPING_INCLUDED.get(str(payer.get("id")))
     seller = data.get("seller")
     if isinstance(seller, dict):
-        ratings = seller.get("ratings") if isinstance(seller.get("ratings"), dict) else {}
+        ratings = seller.get("ratings")
+        # 内訳（良い/普通/悪い）が無い形式でも「0件」と誤解しないよう、分かる範囲だけ使う
+        breakdown = isinstance(ratings, dict) and any(key in ratings for key in ("good", "normal", "bad"))
+        ratings = ratings if breakdown else {}
         listing.seller = Seller(
             id=str(seller.get("id") or listing.seller_id or ""),
             name=seller.get("name"),
@@ -206,6 +232,9 @@ def apply_item_detail(listing: Listing, data: dict[str, Any]) -> None:
             normal=_int(ratings.get("normal")) or 0,
             bad=_int(ratings.get("bad")) or 0,
             num_sell_items=_int(seller.get("num_sell_items")),
+            num_ratings=_int(seller.get("num_ratings")),
+            star_rating=_float(seller.get("star_rating_score")),
+            breakdown_known=breakdown,
         )
 
 

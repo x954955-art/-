@@ -15,8 +15,9 @@ def format_message(keyword: str, evaluations: list[Evaluation], *, title: str = 
     lines = [f"{title}{keyword}"]
     for evaluation in evaluations:
         listing = evaluation.listing
+        buy = "現在の入札" if listing.is_auction else "仕入れ"
         if evaluation.profit is not None:
-            summary = f"仕入れ {yen(listing.price)} → 利益 {yen(evaluation.profit)}（利益率 {evaluation.roi:.0%}）"
+            summary = f"{buy} {yen(listing.price)} → 利益 {yen(evaluation.profit)}（利益率 {evaluation.roi:.0%}）"
         else:
             summary = f"{yen(listing.price)}（相場比 -{max(evaluation.discount, 0):.0%}）"
         details = [listing.condition_label or "", "送料込み" if listing.shipping_included else ""]

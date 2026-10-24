@@ -112,6 +112,17 @@ def format_age(age: timedelta) -> str:
     return f"{minutes // (60 * 24)}日前"
 
 
+def format_remaining(remaining: timedelta) -> str:
+    minutes = int(remaining.total_seconds() // 60)
+    if minutes <= 0:
+        return "終了間近"
+    if minutes < 60:
+        return f"残り{minutes}分"
+    if minutes < 60 * 24:
+        return f"残り{minutes // 60}時間"
+    return f"残り{minutes // (60 * 24)}日"
+
+
 def _round(value: float) -> int:
     return int(value + 0.5)
 
@@ -131,19 +142,33 @@ def _seller_tier(listing: Listing) -> tuple[str, str | None, str | None]:
     if listing.is_shop:
         return "shop", "メルカリShops（事業者の出品）", None
     seller = listing.seller
-    if seller is None:
+    if seller is None or seller.total_ratings is None:
         return "unknown", None, None
-    total, ratio = seller.total_ratings, seller.good_ratio
-    if ratio is None or total < 5:
+    total = seller.total_ratings
+    if total < 5:
         return "few", None, f"出品者の評価が{total}件と少ない"
-    label = f"出品者の評価 良い{ratio:.1%}（{total:,}件）"
-    if ratio >= 0.99 and total >= 50:
-        return "top", label, None
-    if ratio >= 0.98 and total >= 20:
-        return "good", label, None
-    if ratio >= 0.95:
-        return "ok", label, None
-    return "bad", None, f"{label}：悪い評価が多め"
+    ratio = seller.good_ratio
+    if ratio is not None:
+        label = f"出品者の評価 良い{ratio:.1%}（{total:,}件）"
+        if ratio >= 0.99 and total >= 50:
+            return "top", label, None
+        if ratio >= 0.98 and total >= 20:
+            return "good", label, None
+        if ratio >= 0.95:
+            return "ok", label, None
+        return "bad", None, f"{label}：悪い評価が多め"
+    if seller.star_rating is not None:
+        # 良い/普通/悪い の内訳がなく、5段階の平均だけが分かるとき
+        stars = seller.star_rating
+        label = f"出品者の評価 ★{stars:.1f}（{total:,}件）"
+        if stars >= 4.8 and total >= 50:
+            return "top", label, None
+        if stars >= 4.6 and total >= 20:
+            return "good", label, None
+        if stars >= 4.0:
+            return "ok", label, None
+        return "bad", None, f"{label}：評価が低め"
+    return "unknown", f"出品者の評価 {total:,}件", None
 
 
 def _bargain_points(result: Evaluation) -> int:
@@ -283,7 +308,24 @@ def evaluate(
                 result.warnings.append(f"説明文に「{found_word}」")
     if listing.is_auction:
         points -= AUCTION_PENALTY
-        result.warnings.append("オークション形式：表示は現在の入札額で、終了までに上がる可能性が高い")
+        details = [f"入札{listing.auction_bids}件"] if listing.auction_bids is not None else []
+        if listing.auction_end is not None:
+            details.append(format_remaining(listing.auction_end - now))
+        suffix = f"（{'・'.join(details)}）" if details else ""
+        result.warnings.append(f"オークション形式{suffix}：表示は現在の入札額で、終了までに上がる可能性が高い")
+        if resale and result.expected_sale is not None:
+            # この金額で落札すると利益がちょうど最低利益になる
+            extra = settings.buyer_shipping if listing.shipping_included is False else 0
+            max_bid = (
+                round(result.expected_sale * (1 - settings.fee_rate))
+                - profile.resale_shipping(listing, settings.resale_shipping)
+                - settings.min_profit
+                - extra
+            )
+            if max_bid > 0:
+                result.reasons.append(
+                    f"入札上限の目安 {yen(max_bid)}（ここまでで落札できれば利益{yen(settings.min_profit)}以上）"
+                )
     if listing.likes is not None and listing.likes >= POPULAR_LIKES:
         result.warnings.append(f"いいね{listing.likes}件（人気で売れやすい・早めの判断を）")
 
@@ -302,5 +344,6 @@ def evaluate(
 
 def rank(evaluations: list[Evaluation]) -> list[Evaluation]:
     recommended = [evaluation for evaluation in evaluations if evaluation.recommended]
-    recommended.sort(key=lambda e: (-e.score, -(e.profit or 0), -e.discount, e.effective_price))
+    # オークションはすぐには買えず最終価格も分からないので、即決で買える出品の後ろに並べる
+    recommended.sort(key=lambda e: (e.listing.is_auction, -e.score, -(e.profit or 0), -e.discount, e.effective_price))
     return recommended

@@ -193,3 +193,36 @@ def test_box_uses_larger_shipping(now):
     box = make_listing("ポケモンカード 151 BOX シュリンク付き", 20000)
     result = resale_ev(box, now, market, tokens=text.tokens("151 BOX"))
     assert result.profit == 27000 - 520 - 20000
+
+
+
+def test_star_ratings_and_unknown_sellers(now):
+    def seller_result(seller):
+        return ev(make_listing(price=20000, seller=seller), now)
+
+    stars = seller_result(Seller("s", num_ratings=120, star_rating=4.9, breakdown_known=False))
+    assert "出品者の評価 ★4.9（120件）" in stars.reasons
+    low = seller_result(Seller("s", num_ratings=40, star_rating=3.5, breakdown_known=False))
+    assert any("評価が低め" in w for w in low.warnings)
+    unknown = seller_result(Seller("s", breakdown_known=False))
+    assert not any("出品者" in w for w in unknown.warnings)  # 形式が分からないときに「0件」と言わない
+    assert stars.score > unknown.score > low.score
+
+
+def test_auction_shows_bids_time_left_and_max_bid(now):
+    from datetime import timedelta
+
+    auction = make_listing(
+        "リザードンex SAR 201/165", 6000, is_auction=True, auction_bids=3, auction_end=now + timedelta(hours=5)
+    )
+    result = resale_ev(auction, now)
+    assert "オークション形式（入札3件・残り5時間）：表示は現在の入札額で、終了までに上がる可能性が高い" in result.warnings
+    # 売値の目安 10,000円 × 0.9 − 送料 230円 − 最低利益 1,000円
+    assert "入札上限の目安 ¥7,770（ここまでで落札できれば利益¥1,000以上）" in result.reasons
+
+
+def test_auctions_rank_after_buy_now_listings(now):
+    auction = resale_ev(make_listing("リザードンex SAR 201/165", 3000, is_auction=True), now)
+    buy_now = resale_ev(make_listing("リザードンex SAR 201/165", 7500), now)
+    assert auction.score > buy_now.score
+    assert rank([auction, buy_now]) == [buy_now, auction]

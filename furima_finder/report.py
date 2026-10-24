@@ -94,8 +94,11 @@ def item_lines(rank: int, evaluation: Evaluation) -> list[str]:
     price = yen(listing.price)
     if evaluation.effective_price != listing.price:
         price += f"（送料を足すと約 {yen(evaluation.effective_price)}）"
+    if listing.is_auction:
+        price = f"現在の入札 {price}"
     if evaluation.profit is not None:
-        head += f"仕入れ {price} → 利益 {yen(evaluation.profit)}（利益率 {evaluation.roi:.0%}）"
+        buy = price if listing.is_auction else f"仕入れ {price}"
+        head += f"{buy} → 利益 {yen(evaluation.profit)}（利益率 {evaluation.roi:.0%}）"
     else:
         head += f"{price}  相場比 {_pct(evaluation.discount)}"
     head += f"  [{listing.source_label}]"
@@ -152,7 +155,7 @@ def print_result(result: SearchResult, out: TextIO, *, top: int, color: bool) ->
 CSV_COLUMNS = [
     "キーワード", "順位", "スコア", "サイト", "商品名", "価格", "実質価格", "比較した相場", "相場からの割引率(%)",
     "売値の目安", "利益", "利益率(%)", "直近30日の販売数", "相場の動き(%)",
-    "状態", "送料", "出品日時", "理由", "注意", "URL",
+    "状態", "送料", "出品日時", "オークション終了日時", "理由", "注意", "URL",
 ]
 
 
@@ -175,7 +178,8 @@ def write_csv(results: list[SearchResult], path: Path) -> None:
                     round(evaluation.discount * 100, 1), _optional(evaluation.expected_sale),
                     _optional(evaluation.profit), _optional(evaluation.roi, 100), _optional(evaluation.sales_30d),
                     _optional(evaluation.trend, 100), listing.condition_label or "", shipping,
-                    _jst(listing.created_at), " / ".join(r for r in evaluation.reasons if r),
+                    _jst(listing.created_at), _jst(listing.auction_end) if listing.is_auction else "",
+                    " / ".join(r for r in evaluation.reasons if r),
                     " / ".join(evaluation.warnings), listing.url,
                 ])
 
@@ -197,6 +201,9 @@ def _evaluation_json(evaluation: Evaluation) -> dict:
         "condition_label": listing.condition_label,
         "shipping_included": listing.shipping_included,
         "created_at": listing.created_at.isoformat() if listing.created_at else None,
+        "is_auction": listing.is_auction,
+        "auction_end": listing.auction_end.isoformat() if listing.auction_end else None,
+        "auction_bids": listing.auction_bids,
         "thumbnail": listing.thumbnail,
         "reasons": [r for r in evaluation.reasons if r],
         "warnings": evaluation.warnings,
@@ -314,6 +321,8 @@ def _card(evaluation: Evaluation) -> str:
     e = html.escape
     listing = evaluation.listing
     chips = [listing.source_label]
+    if listing.is_auction:
+        chips.append("オークション")
     if listing.condition_label:
         chips.append(listing.condition_label)
     chips.append({True: "送料込み", False: "着払い", None: "送料不明"}[listing.shipping_included])
@@ -345,7 +354,7 @@ def _card(evaluation: Evaluation) -> str:
   <div class="thumb{'' if image else ' noimg'}">{image}{badge}<span class="score">{evaluation.score}点</span></div>
   <div class="body">
     <div class="title">{e(listing.title)}</div>
-    <div class="price">{e(yen(listing.price))}{effective}</div>
+    <div class="price">{"<small>現在の入札</small> " if listing.is_auction else ""}{e(yen(listing.price))}{effective}</div>
     <div class="muted">{e(summary)}</div>
     <div class="chips">{''.join(f'<span class="chip">{e(c)}</span>' for c in chips)}</div>
     {f'<ul class="reasons">{reasons}</ul>' if reasons else ''}

@@ -6,6 +6,7 @@ fixtures/mercari_*.json は実際の通信を記録したものではなく、me
 
 import base64
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -122,8 +123,11 @@ def test_parse_search_items():
 
     assert auction.sold
     assert auction.is_auction
+    assert auction.auction_end == datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
+    assert auction.auction_bids == 3
     assert auction.shipping_included is False
     assert auction.condition == 4
+    assert normal.auction_end is None and normal.auction_bids is None
 
 
 def test_parse_search_item_rejects_broken_rows():
@@ -240,3 +244,19 @@ def test_non_json_response_is_a_fetch_error():
 
     with pytest.raises(FetchError):
         source.search(SearchQuery(keyword="Switch"))
+
+
+def test_seller_ratings_without_breakdown_are_not_read_as_zero():
+    stars_only = Listing("mercari", "m1", "Switch", 100, "u")
+    apply_item_detail(stars_only, {"seller": {"id": 1, "num_ratings": 120, "star_rating_score": 4.9}})
+    assert stars_only.seller.total_ratings == 120
+    assert stars_only.seller.good_ratio is None
+    assert stars_only.seller.star_rating == 4.9
+
+    nothing = Listing("mercari", "m2", "Switch", 100, "u")
+    apply_item_detail(nothing, {"seller": {"id": 2, "name": "x"}})
+    assert nothing.seller.total_ratings is None  # 分からない（0件ではない）
+
+    new_seller = Listing("mercari", "m3", "Switch", 100, "u")
+    apply_item_detail(new_seller, {"seller": {"id": 3, "ratings": {"good": 0, "normal": 0, "bad": 0}}})
+    assert new_seller.seller.total_ratings == 0

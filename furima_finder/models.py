@@ -29,15 +29,22 @@ class Seller:
     normal: int = 0
     bad: int = 0
     num_sell_items: int | None = None
+    num_ratings: int | None = None  # 評価の総数（内訳が分からないときにも使う）
+    star_rating: float | None = None  # 5段階の平均
+    breakdown_known: bool = True  # 良い/普通/悪い の内訳が分かっているか
 
     @property
-    def total_ratings(self) -> int:
-        return self.good + self.normal + self.bad
+    def total_ratings(self) -> int | None:
+        """評価の件数。分からなければ None。"""
+        counts = [self.num_ratings] if self.num_ratings is not None else []
+        if self.breakdown_known:
+            counts.append(self.good + self.normal + self.bad)
+        return max(counts) if counts else None
 
     @property
     def good_ratio(self) -> float | None:
-        total = self.total_ratings
-        return self.good / total if total else None
+        total = self.good + self.normal + self.bad
+        return self.good / total if self.breakdown_known and total else None
 
 
 @dataclass
@@ -58,6 +65,8 @@ class Listing:
     seller_id: str | None = None
     is_shop: bool = False
     is_auction: bool = False
+    auction_end: datetime | None = None
+    auction_bids: int | None = None
     # 以下は商品詳細を取得したときだけ埋まる
     description: str | None = None
     likes: int | None = None
