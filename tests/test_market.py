@@ -69,7 +69,7 @@ def test_estimate_market_ignores_irrelevant_junk_and_outliers():
 def test_estimate_market_needs_minimum_samples():
     market = estimate([make_listing(price=30000, sold=True), make_listing(price=31000, sold=True)])
     assert not market.ok
-    assert market.reference(3) is None
+    assert market.lookup("good") is None
 
 
 def test_condition_groups_are_used_only_with_enough_samples():
@@ -79,9 +79,10 @@ def test_condition_groups_are_used_only_with_enough_samples():
     market = estimate(sold)
     assert market.overall.median == 30000
     assert set(market.groups) == {"new"}
-    assert market.reference(1) == (36000, "新品・未使用の相場")
-    assert market.reference(3) == (30000, "相場")
-    assert market.reference(None) == (30000, "相場")
+    assert market.lookup("new") == (market.groups["new"], "新品・未使用")
+    assert market.groups["new"].median == 36000
+    assert market.lookup("good") == (market.overall, "")
+    assert market.lookup(None) == (market.overall, "")
     assert market.reference_range() == (30000, 36000)
 
 
@@ -98,3 +99,46 @@ def test_notes_explain_weak_estimates():
     assert "手動" in MarketStats.manual(5000).notes()[0]
     on_sale = estimate([make_listing(price=30000) for _ in range(3)], basis="on_sale")
     assert any("販売中の価格" in note for note in on_sale.notes())
+
+
+def test_recent_median_sales_count_and_trend(now):
+    from datetime import timedelta
+
+    from furima_finder.market import PriceStats
+
+    def sold(price, days):
+        return make_listing("Switch 有機EL", price, sold=True, updated_at=now - timedelta(days=days))
+
+    listings = [sold(11000, days) for days in (1, 2, 3, 4, 5, 6)]
+    listings += [sold(10000, days) for days in (10, 12, 15, 20, 25, 28)]
+    listings.append(sold(9000, 40))
+    stats = estimate(listings, now=now).overall
+    assert stats.count == 13
+    assert stats.recent_median == 11000  # 14日以内の8件
+    assert stats.sales_30d == 12
+    assert stats.trend == pytest.approx(0.1)  # 直近7日 11,000円 ÷ それより前 10,000円
+    # 日時が分からなければ計算しない
+    plain = PriceStats.of([1, 2, 3])
+    assert (plain.recent_median, plain.sales_30d, plain.trend) == (None, None, None)
+
+
+def test_on_sale_basis_has_no_sales_activity(now):
+    market = estimate([make_listing(price=30000) for _ in range(5)], basis="on_sale", now=now)
+    assert market.overall.sales_30d is None
+
+
+def test_strict_profile_keeps_grades_apart(now):
+    from furima_finder.profiles import POKECA
+
+    sold = [make_listing(f"リザードンex SAR 201/165 美品{i}", 10000 + i * 100, sold=True) for i in range(10)]
+    sold += [make_listing("【PSA10】リザードンex SAR 201/165", price, sold=True) for price in (40000, 42000, 41000)]
+    market = estimate_market(
+        sold, text.tokens("リザードンex SAR"), min_match=0.5, buyer_shipping=300, profile=POKECA, now=now
+    )
+    # PSA10 は未鑑定の中では外れ値だが、グループごとに判定するので消えない
+    assert market.excluded_outliers == 0
+    assert market.groups["raw"].median == 10450
+    assert market.groups["psa10"].median == 41000
+    assert market.lookup("psa10") == (market.groups["psa10"], "PSA10")
+    assert market.lookup("psa9") is None  # 同じ種類の売り切れがなければ比べない
+    assert market.reference_range() == (10450, 41000)

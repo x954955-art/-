@@ -122,3 +122,116 @@ def test_condition_filter_is_sent_to_both_searches(now):
     plan = SearchPlan(keyword="Switch", condition="good", settings=Settings(condition_filtered=True))
     run_search(plan, {"mercari": source}, now=now)
     assert all(query.conditions == [1, 2, 3] for query in source.queries)
+
+
+# ---------------------------------------------------------------- ポケモンカード
+
+from furima_finder.finder import SCAN_DEFAULT_MIN_PRICE, run_scan  # noqa: E402
+from furima_finder.profiles import pokeca_card_key  # noqa: E402
+
+POKECA_SETTINGS = Settings(resale=True, resale_shipping=230, min_profit=1000, buyer_shipping=300)
+
+
+def card(title, price, **kwargs):
+    return make_listing(title, price, condition=kwargs.pop("condition", 2), **kwargs)
+
+
+def test_pokeca_search_compares_each_grade_with_its_own_market(now):
+    sold = [card(f"リザードンex SAR 201/165 美品 {i}", 10000, sold=True) for i in range(6)]
+    sold += [card("PSA10 リザードンex SAR 201/165", 40000, sold=True) for _ in range(4)]
+    on_sale = [
+        card("リザードンex SAR 201/165", 6000, id="raw"),
+        card("【PSA10】リザードンex SAR 201/165", 30000, id="psa"),
+        card("リザードンex SAR 201/165 PSA9", 20000, id="psa9"),
+    ]
+    source = FakeSource(sold=sold, on_sale=on_sale)
+    plan = SearchPlan(keyword="リザードンex SAR 201/165", profile="pokeca", details=0, settings=POKECA_SETTINGS)
+    result = run_search(plan, {"mercari": source}, now=now)
+
+    by_id = {e.listing.id: e for e in result.recommendations}
+    assert by_id["raw"].expected_sale == 10000 and by_id["raw"].profit == 9000 - 230 - 6000
+    assert by_id["psa"].expected_sale == 40000 and by_id["psa"].profit == 36000 - 230 - 30000
+    assert "psa9" not in by_id
+    assert result.excluded["相場不明"] == 1
+    # 利益が出うる価格帯だけを検索する: 相場の30% 〜 （最高の相場×0.9 − 送料 − 最低利益）
+    on_sale_query = source.queries[1]
+    assert (on_sale_query.price_min, on_sale_query.price_max) == (3000, 36000 - 230 - 1000)
+
+
+class ScanSource(FakeSource):
+    """売り切れ検索ではキーワードのカード番号に合う出品だけを返す。"""
+
+    def __init__(self, sold_by_card, **kwargs):
+        super().__init__(**kwargs)
+        self.sold_by_card = sold_by_card
+
+    def search(self, query):
+        self.queries.append(query)
+        if not query.sold:
+            return [x for x in self.on_sale if not query.price_min or x.price >= query.price_min]
+        if self.error:
+            raise self.error
+        return self.sold_by_card.get(query.keyword.split()[0], [])
+
+
+def scan_fixture():
+    on_sale = [
+        card("リザードンex SAR 201/165 151", 6000, id="zard-cheap", age=timedelta(hours=1)),
+        card("リザードンex SAR 201/165", 9500, id="zard-normal", age=timedelta(days=1)),
+        card("ナンジャモ SAR 096/071", 4000, id="nanja", age=timedelta(hours=5)),
+        card("ピカチュウ AR 120/100", 1500, id="pika", age=timedelta(days=3)),
+        card("ポケカ オリパ SAR確定", 3000, id="oripa"),
+        card("リザードン SAR 美品", 5000, id="no-number"),
+        card("安いカード AR 001/100", 500, id="too-cheap"),
+    ]
+    sold_by_card = {
+        "201/165": [card(f"リザードンex SAR 201/165 {i}", 10000, sold=True) for i in range(8)]
+        + [card("リザードン SAR 美品", 2000, sold=True)],  # 番号違いは相場に入れない
+        "096/071": [card("ナンジャモ SAR 096/071", 4500, sold=True) for _ in range(8)],
+        "120/100": [card("ピカチュウ AR 120/100", 1800, sold=True) for _ in range(8)],
+    }
+    return ScanSource(sold_by_card, on_sale=on_sale)
+
+
+def test_scan_finds_profitable_cards_across_card_numbers(now):
+    source = scan_fixture()
+    plan = SearchPlan(keyword="ポケモンカード SAR", profile="pokeca", scan=True, details=0, settings=POKECA_SETTINGS)
+    result = run_scan(plan, {"mercari": source}, now=now)
+
+    on_sale_query, *sold_queries = source.queries
+    assert on_sale_query.price_min == SCAN_DEFAULT_MIN_PRICE and not on_sale_query.sold
+    # 新しい出品があるカードから順に、カード番号＋レアリティで売り切れを探す
+    assert [q.keyword for q in sold_queries] == ["201/165 SAR", "096/071 SAR", "120/100 AR"]
+    assert all(q.sold and q.pages == 1 for q in sold_queries)
+
+    assert [e.listing.id for e in result.recommendations] == ["zard-cheap"]
+    top = result.recommendations[0]
+    assert top.expected_sale == 10000 and top.profit == 9000 - 230 - 6000
+    assert result.excluded["オリパ"] == 1
+    assert result.excluded["カード番号なし"] == 1
+    assert result.excluded["利益が少ない"] == 3  # 9,500円のリザードン・ナンジャモ・ピカチュウ
+    assert result.market.basis == "scan"
+    assert result.checked == 6  # 500円の出品は最低価格で除かれる
+
+
+def test_scan_limits_the_number_of_cards(now):
+    source = scan_fixture()
+    plan = SearchPlan(keyword="ポケモンカード SAR", profile="pokeca", scan=True, scan_cards=1, details=0, settings=POKECA_SETTINGS)
+    result = run_scan(plan, {"mercari": source}, now=now)
+    assert len(source.queries) == 2
+    assert any("--scan-cards" in note for note in result.notes)
+
+
+def test_scan_stops_after_sold_errors(now):
+    source = scan_fixture()
+    source.error = FetchError("api.mercari.jp から取得できませんでした（HTTP 429: …）")
+    plan = SearchPlan(keyword="ポケモンカード SAR", profile="pokeca", scan=True, details=0, settings=POKECA_SETTINGS)
+    result = run_scan(plan, {"mercari": source}, now=now)
+    assert len(source.queries) == 2  # 販売中 + 最初のカードの売り切れで止まる
+    assert len(result.errors) == 1 and "201/165" in result.errors[0]
+    assert any("中止" in note for note in result.notes)
+    assert result.recommendations == []
+
+
+def test_card_key_helper_matches_fixture():
+    assert pokeca_card_key("リザードンex SAR 201/165 151") == "201/165"

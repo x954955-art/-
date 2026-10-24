@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import TextIO
 
 from .finder import SearchResult
-from .market import CONDITION_GROUPS, MarketStats
-from .scoring import Evaluation, yen
+from .market import MarketStats, PriceStats
+from .scoring import Evaluation, signed_pct, yen
 
 JST = timezone(timedelta(hours=9), "JST")
 
@@ -25,7 +25,20 @@ def _pct(discount: float) -> str:
     return f"-{discount:.0%}" if discount >= 0 else f"+{-discount:.0%}"
 
 
+def _activity(stats: PriceStats) -> str:
+    parts = []
+    if stats.recent_median:
+        parts.append(f"直近14日 {yen(stats.recent_median)}")
+    if stats.sales_30d is not None:
+        parts.append(f"30日で{stats.sales_30d}件")
+    if stats.trend is not None:
+        parts.append(f"直近7日 {signed_pct(stats.trend)}")
+    return "・" + "・".join(parts) if parts else ""
+
+
 def market_lines(market: MarketStats, *, fetch_failed: bool = False) -> list[str]:
+    if market.basis == "scan":
+        return ["カード番号ごとに売り切れ価格を調べ、そのカードの相場と比べています"]
     if market.overall is None:
         if fetch_failed:
             return ["相場: 出品を取得できなかったため算出できませんでした"]
@@ -37,17 +50,24 @@ def market_lines(market: MarketStats, *, fetch_failed: bool = False) -> list[str
     if market.basis == "manual":
         return [f"相場 {yen(overall.median)}（手動指定）"]
     basis = "売り切れ" if market.basis == "sold" else "販売中"
+    if market.strict and market.groups:
+        # PSA10 と未鑑定のように価格帯が違うものは、まとめた相場を出しても意味がないので種類ごとに出す
+        return [
+            f"{market.labels.get(key, key)}の相場 {yen(stats.median)}（{basis} {stats.count}件の中央値・"
+            f"中央50%は {yen(stats.q1)}〜{yen(stats.q3)}{_activity(stats)}）"
+            for key, stats in market.groups.items()
+        ]
     period = ""
     if market.oldest and market.newest:
         oldest, newest = _jst(market.oldest, "%m/%d"), _jst(market.newest, "%m/%d")
         period = f"・{oldest}" if oldest == newest else f"・{oldest}〜{newest}"
     lines = [
         f"相場 {yen(overall.median)}（{basis} {overall.count}件の中央値{period}・"
-        f"中央50%は {yen(overall.q1)}〜{yen(overall.q3)}）"
+        f"中央50%は {yen(overall.q1)}〜{yen(overall.q3)}{_activity(overall)}）"
     ]
     if market.groups:
         parts = [
-            f"{CONDITION_GROUPS[key][0]} {yen(stats.median)}（{stats.count}件）"
+            f"{market.labels.get(key, key)} {yen(stats.median)}（{stats.count}件）"
             for key, stats in market.groups.items()
         ]
         lines.append("状態別: " + " / ".join(parts))
@@ -68,18 +88,21 @@ def empty_message(result: SearchResult) -> str:
     return "条件に合うおすすめはありませんでした。--min-discount を下げる・キーワードを変えるなどを試してください。"
 
 
-def item_lines(rank: int, evaluation: Evaluation, *, resale: bool) -> list[str]:
+def item_lines(rank: int, evaluation: Evaluation) -> list[str]:
     listing = evaluation.listing
-    head = f"{rank:>2}. {evaluation.score}点 {yen(listing.price)}"
+    head = f"{rank:>2}. {evaluation.score}点 "
+    price = yen(listing.price)
     if evaluation.effective_price != listing.price:
-        head += f"（送料を足すと約 {yen(evaluation.effective_price)}）"
-    head += f"  相場比 {_pct(evaluation.discount)}  [{listing.source_label}]"
+        price += f"（送料を足すと約 {yen(evaluation.effective_price)}）"
+    if evaluation.profit is not None:
+        head += f"仕入れ {price} → 利益 {yen(evaluation.profit)}（利益率 {evaluation.roi:.0%}）"
+    else:
+        head += f"{price}  相場比 {_pct(evaluation.discount)}"
+    head += f"  [{listing.source_label}]"
     lines = [head, f"    {listing.title}"]
     reasons = [reason for reason in evaluation.reasons if reason]
     if reasons:
         lines.append("    " + " / ".join(reasons))
-    if resale and evaluation.profit is not None:
-        lines.append(f"    転売の目安: 利益 {yen(evaluation.profit)}（相場で売れた場合・手数料と送料を差し引き）")
     for warning in evaluation.warnings:
         lines.append(f"    注意: {warning}")
     lines.append(f"    {listing.url}")
@@ -94,9 +117,10 @@ class _Style:
         return f"\033[{code}m{value}\033[0m" if self.enabled else value
 
 
-def print_result(result: SearchResult, out: TextIO, *, top: int, color: bool, resale: bool) -> None:
+def print_result(result: SearchResult, out: TextIO, *, top: int, color: bool) -> None:
     style = _Style(color)
-    out.write(style(f"■「{result.plan.keyword}」", "1") + f"  {_jst(result.searched_at)} 時点\n")
+    title = f"■「{result.plan.keyword}」" + ("のスキャン" if result.plan.scan else "")
+    out.write(style(title, "1") + f"  {_jst(result.searched_at)} 時点\n")
     for line in market_lines(result.market, fetch_failed=result.fetch_failed):
         out.write(f"  {line}\n")
     for note in result.market.notes() + result.notes:
@@ -109,7 +133,7 @@ def print_result(result: SearchResult, out: TextIO, *, top: int, color: bool, re
         out.write(f"  {empty_message(result)}\n\n")
         return
     for rank, evaluation in enumerate(shown, 1):
-        lines = item_lines(rank, evaluation, resale=resale)
+        lines = item_lines(rank, evaluation)
         score_color = "32" if evaluation.score >= 70 else "33" if evaluation.score >= 50 else "0"
         out.write("  " + style(lines[0], f"1;{score_color}") + "\n")
         for line in lines[1:]:
@@ -127,8 +151,13 @@ def print_result(result: SearchResult, out: TextIO, *, top: int, color: bool, re
 
 CSV_COLUMNS = [
     "キーワード", "順位", "スコア", "サイト", "商品名", "価格", "実質価格", "比較した相場", "相場からの割引率(%)",
-    "状態", "送料", "出品日時", "理由", "注意", "転売利益の目安", "URL",
+    "売値の目安", "利益", "利益率(%)", "直近30日の販売数", "相場の動き(%)",
+    "状態", "送料", "出品日時", "理由", "注意", "URL",
 ]
+
+
+def _optional(value, scale: float = 1.0):
+    return "" if value is None else round(value * scale, 1) if scale != 1.0 else value
 
 
 def write_csv(results: list[SearchResult], path: Path) -> None:
@@ -143,10 +172,11 @@ def write_csv(results: list[SearchResult], path: Path) -> None:
                 writer.writerow([
                     result.plan.keyword, rank, evaluation.score, listing.source_label, listing.title,
                     listing.price, evaluation.effective_price, evaluation.reference_price,
-                    round(evaluation.discount * 100, 1), listing.condition_label or "", shipping,
+                    round(evaluation.discount * 100, 1), _optional(evaluation.expected_sale),
+                    _optional(evaluation.profit), _optional(evaluation.roi, 100), _optional(evaluation.sales_30d),
+                    _optional(evaluation.trend, 100), listing.condition_label or "", shipping,
                     _jst(listing.created_at), " / ".join(r for r in evaluation.reasons if r),
-                    " / ".join(evaluation.warnings), "" if evaluation.profit is None else evaluation.profit,
-                    listing.url,
+                    " / ".join(evaluation.warnings), listing.url,
                 ])
 
 
@@ -170,7 +200,11 @@ def _evaluation_json(evaluation: Evaluation) -> dict:
         "thumbnail": listing.thumbnail,
         "reasons": [r for r in evaluation.reasons if r],
         "warnings": evaluation.warnings,
+        "expected_sale": evaluation.expected_sale,
         "profit": evaluation.profit,
+        "roi": None if evaluation.roi is None else round(evaluation.roi, 4),
+        "sales_30d": evaluation.sales_30d,
+        "trend": None if evaluation.trend is None else round(evaluation.trend, 4),
     }
 
 
@@ -179,6 +213,7 @@ def _market_json(market: MarketStats) -> dict:
         "basis": market.basis,
         "overall": asdict(market.overall) if market.overall else None,
         "groups": {key: asdict(value) for key, value in market.groups.items()},
+        "group_labels": {key: market.labels.get(key, key) for key in market.groups},
         "fetched": market.fetched,
         "excluded_irrelevant": market.excluded_irrelevant,
         "excluded_rules": market.excluded_rules,
@@ -210,16 +245,19 @@ _CSS = """
 :root {
   --bg: #f5f6f8; --card: #ffffff; --text: #1c2230; --muted: #5d6777; --line: #e2e5ea;
   --accent: #d93a2f; --good: #1d7f48; --warn: #9a5b00; --warn-bg: #fff4e0; --chip: #eef1f5;
+  --on-accent: #ffffff; --on-good: #ffffff;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #13161b; --card: #1c2027; --text: #e7eaef; --muted: #9ba4b1; --line: #2b313a;
     --accent: #ff6a5e; --good: #4cc584; --warn: #f2b45a; --warn-bg: #3a2c14; --chip: #262b33;
+    --on-accent: #1a0a08; --on-good: #0b1f13;
   }
 }
 :root[data-theme="dark"] {
   --bg: #13161b; --card: #1c2027; --text: #e7eaef; --muted: #9ba4b1; --line: #2b313a;
   --accent: #ff6a5e; --good: #4cc584; --warn: #f2b45a; --warn-bg: #3a2c14; --chip: #262b33;
+  --on-accent: #1a0a08; --on-good: #0b1f13;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text);
@@ -240,7 +278,8 @@ h2 { font-size: 19px; margin: 32px 0 6px; }
 .thumb { position: relative; aspect-ratio: 1 / 1; background: var(--chip); }
 .thumb.noimg { aspect-ratio: auto; height: 44px; }
 .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.badge { position: absolute; left: 8px; top: 8px; background: var(--accent); color: #fff; font-weight: 700; border-radius: 8px; padding: 2px 8px; }
+.badge { position: absolute; left: 8px; top: 8px; background: var(--accent); color: var(--on-accent); font-weight: 700; border-radius: 8px; padding: 2px 8px; }
+.badge.profit { background: var(--good); color: var(--on-good); }
 .score { position: absolute; right: 8px; top: 8px; background: rgba(0,0,0,.66); color: #fff; border-radius: 8px; padding: 2px 8px; font-size: 13px; }
 .body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
 .title { font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -271,7 +310,7 @@ document.querySelectorAll('select[data-grid]').forEach(function (select) {
 """
 
 
-def _card(evaluation: Evaluation, *, resale: bool) -> str:
+def _card(evaluation: Evaluation) -> str:
     e = html.escape
     listing = evaluation.listing
     chips = [listing.source_label]
@@ -284,34 +323,47 @@ def _card(evaluation: Evaluation, *, resale: bool) -> str:
         if listing.thumbnail
         else ""
     )
+    reasons_list = [r for r in evaluation.reasons if r]
+    if evaluation.profit is not None:
+        badge = f'<span class="badge profit">利益 {e(yen(evaluation.profit))}</span>'
+        # 先頭の理由は「売値の目安 …」なので、見出しの下にまとめて出す
+        summary = f"{reasons_list.pop(0)}／利益率 {evaluation.roi:.0%}" if reasons_list else ""
+    else:
+        badge = f'<span class="badge">{e(_pct(evaluation.discount))}</span>'
+        summary = f"{evaluation.reference_label} {yen(evaluation.reference_price or 0)}"
     # 状態・送料はチップで出しているので、理由の箇条書きからは省く
-    reasons = "".join(f"<li>{e(r)}</li>" for r in evaluation.reasons if r and r not in chips)
+    reasons = "".join(f"<li>{e(r)}</li>" for r in reasons_list if r not in chips)
     warnings = "".join(f"<li>{e(w)}</li>" for w in evaluation.warnings)
-    profit = ""
-    if resale and evaluation.profit is not None:
-        profit = f'<p class="muted">転売の目安: 利益 {e(yen(evaluation.profit))}</p>'
     effective = ""
     if evaluation.effective_price != listing.price:
         effective = f" <small>送料を足すと約 {e(yen(evaluation.effective_price))}</small>"
     created = listing.created_at.timestamp() if listing.created_at else 0
     return f"""
 <article class="card" data-score="{evaluation.score}" data-discount="{evaluation.discount:.4f}"
+  data-profit="{evaluation.profit or 0}" data-roi="{evaluation.roi or 0:.4f}"
   data-price="{evaluation.effective_price}" data-created="{created:.0f}">
-  <div class="thumb{'' if image else ' noimg'}">{image}<span class="badge">{e(_pct(evaluation.discount))}</span><span class="score">{evaluation.score}点</span></div>
+  <div class="thumb{'' if image else ' noimg'}">{image}{badge}<span class="score">{evaluation.score}点</span></div>
   <div class="body">
     <div class="title">{e(listing.title)}</div>
     <div class="price">{e(yen(listing.price))}{effective}</div>
-    <div class="muted">{e(evaluation.reference_label)} {e(yen(evaluation.reference_price or 0))}</div>
+    <div class="muted">{e(summary)}</div>
     <div class="chips">{''.join(f'<span class="chip">{e(c)}</span>' for c in chips)}</div>
     {f'<ul class="reasons">{reasons}</ul>' if reasons else ''}
     {f'<ul class="warnings">{warnings}</ul>' if warnings else ''}
-    {profit}
     <a class="open" href="{e(listing.url)}" target="_blank" rel="noopener noreferrer">商品ページを開く</a>
   </div>
 </article>"""
 
 
-def render_html(results: list[SearchResult], *, top: int, resale: bool, generated_at: datetime) -> str:
+_SORTS = [("score", "おすすめ順"), ("discount", "割引率が大きい順"), ("price", "安い順"), ("created", "新着順")]
+_RESALE_SORTS = [("score", "おすすめ順"), ("profit", "利益が大きい順"), ("roi", "利益率が高い順"), ("price", "安い順"), ("created", "新着順")]
+_RESALE_NOTE = (
+    "利益は「相場の価格で売れた場合」の目安です。仕入れて転売することを繰り返す場合は古物商許可が必要になり、"
+    "メルカリでは事業者はフリマアプリではなくメルカリShopsを使う決まりです。"
+)
+
+
+def render_html(results: list[SearchResult], *, top: int, generated_at: datetime) -> str:
     e = html.escape
     sections = []
     for index, result in enumerate(results):
@@ -321,21 +373,28 @@ def render_html(results: list[SearchResult], *, top: int, resale: bool, generate
         info += "".join(f'<p class="note">※ {e(n)}</p>' for n in result.market.notes() + result.notes)
         info += "".join(f'<p class="error">取得エラー: {e(err)}</p>' for err in result.errors)
         info += f'<p class="muted">{e(summary_line(result))}</p>'
-        cards = "".join(_card(ev, resale=resale) for ev in result.recommendations[:top])
+        cards = "".join(_card(ev) for ev in result.recommendations[:top])
         grid_id = f"grid-{index}"
+        sorts = _RESALE_SORTS if result.plan.settings.resale else _SORTS
+        options = "".join(f'<option value="{key}">{label}</option>' for key, label in sorts)
         body = (
             f"""<div class="toolbar"><label class="muted" for="sort-{index}">並び替え</label>
-<select id="sort-{index}" data-grid="{grid_id}">
-<option value="score">おすすめ順</option><option value="discount">割引率が大きい順</option>
-<option value="price">安い順</option><option value="created">新着順</option></select></div>
+<select id="sort-{index}" data-grid="{grid_id}">{options}</select></div>
 <div class="grid" id="{grid_id}">{cards}</div>"""
             if cards
             else f'<p class="empty">{e(empty_message(result))}</p>'
         )
+        title = f"「{result.plan.keyword}」" + ("のスキャン" if result.plan.scan else "")
         sections.append(
-            f"""<section><h2>「{e(result.plan.keyword)}」</h2>
+            f"""<section><h2>{e(title)}</h2>
 <div class="market">{info}</div>{body}</section>"""
         )
+    resale = any(result.plan.settings.resale for result in results)
+    lead = (
+        "売り切れ価格（相場）で売った場合に利益が出るものを点数順に並べています。"
+        if resale
+        else "売り切れ価格（相場）より安いものを点数順に並べています。"
+    )
     return f"""<!doctype html>
 <html lang="ja">
 <head>
@@ -347,16 +406,16 @@ def render_html(results: list[SearchResult], *, top: int, resale: bool, generate
 <body>
 <header>
 <h1>フリマおすすめ候補</h1>
-<p class="muted">{e(_jst(generated_at))} 時点の出品から、売り切れ価格（相場）より安いものを点数順に並べています。</p>
+<p class="muted">{e(_jst(generated_at))} 時点の出品から、{e(lead)}</p>
 </header>
 {''.join(sections)}
-<footer>価格・在庫は取得した時点のものです。購入前に必ず商品ページで状態・説明文・出品者の評価を確認してください。</footer>
+<footer>価格・在庫は取得した時点のものです。購入前に必ず商品ページで状態・説明文・出品者の評価を確認してください。{e(_RESALE_NOTE) if resale else ""}</footer>
 <script>{_JS}</script>
 </body>
 </html>
 """
 
 
-def write_html(results: list[SearchResult], path: Path, *, top: int, resale: bool) -> None:
+def write_html(results: list[SearchResult], path: Path, *, top: int) -> None:
     generated_at = max((r.searched_at for r in results), default=datetime.now(timezone.utc))
-    path.write_text(render_html(results, top=top, resale=resale, generated_at=generated_at), encoding="utf-8")
+    path.write_text(render_html(results, top=top, generated_at=generated_at), encoding="utf-8")

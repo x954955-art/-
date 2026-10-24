@@ -15,9 +15,10 @@ from typing import Any, TextIO
 import requests
 
 from . import __version__
-from .finder import CONDITION_FILTERS, SearchPlan, SearchResult, run_search
+from .finder import CONDITION_FILTERS, SearchPlan, SearchResult, run_plan
 from .http import HttpClient
 from .notify import format_message, send_webhook
+from .profiles import PROFILES, get_profile
 from .report import JST, item_lines, print_result, write_csv, write_html, write_json
 from .scoring import Settings
 from .sources import AVAILABLE, Source, create_sources
@@ -42,14 +43,23 @@ DEFAULTS: dict[str, Any] = {
     "resale": False,
     "fee_rate": 0.10,
     "resale_shipping": 750,
+    "min_profit": 500,
+    "min_roi": 0.15,
+    "min_sales": 3,
+    "profile": "default",
+    "scan": False,
+    "scan_cards": 20,
 }
 
 EXAMPLES = """\
 例:
   python -m furima_finder "Nintendo Switch 有機EL" --min-price 15000
   python -m furima_finder "iPad mini 6 64GB" --max-price 45000 --condition good --html report.html
-  python -m furima_finder "ポケモンカード 151 BOX" --sources mercari,rakuma --min-discount 20%
-  python -m furima_finder --config watchlist.toml --watch 15 --webhook https://discord.com/api/webhooks/...
+
+  # ポケモンカード: 転売して利益が出るカードを探す
+  python -m furima_finder --profile pokeca --scan "ポケモンカード SAR" --max-price 30000 --html pokeca.html
+  python -m furima_finder --profile pokeca "リザードンex SAR 201/165"
+  python -m furima_finder --config watchlist.pokeca.example.toml --watch 15 --webhook https://discord.com/api/webhooks/...
 """
 
 
@@ -137,6 +147,12 @@ def _bool(value: Any) -> bool:
     return value
 
 
+def _profile(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError(value)
+    return get_profile(value.strip()).name
+
+
 COERCE: dict[str, Callable[[Any], Any]] = {
     "exclude": _words,
     "min_price": _non_negative,
@@ -154,6 +170,12 @@ COERCE: dict[str, Callable[[Any], Any]] = {
     "resale": _bool,
     "fee_rate": parse_ratio,
     "resale_shipping": _non_negative,
+    "min_profit": _non_negative,
+    "min_roi": parse_ratio,
+    "min_sales": _non_negative,
+    "profile": _profile,
+    "scan": _bool,
+    "scan_cards": _positive,
 }
 
 
@@ -213,6 +235,9 @@ def make_plan(values: Mapping[str, Any]) -> SearchPlan:
         resale=values["resale"],
         fee_rate=values["fee_rate"],
         resale_shipping=values["resale_shipping"],
+        min_profit=values["min_profit"],
+        min_roi=values["min_roi"],
+        min_sales=values["min_sales"],
     )
     return SearchPlan(
         keyword=values["keyword"],
@@ -226,12 +251,16 @@ def make_plan(values: Mapping[str, Any]) -> SearchPlan:
         market_price=values["market_price"] or None,
         details=values["details"],
         floor_ratio=values["floor_ratio"],
+        profile=values["profile"],
+        scan=values["scan"],
+        scan_cards=values["scan_cards"],
         settings=settings,
     )
 
 
 def build_plans(args: argparse.Namespace) -> list[SearchPlan]:
-    """組み込みの既定値 < 設定ファイルの [defaults] < 各 [[search]] < コマンドライン の順で上書きする。"""
+    """組み込みの既定値 < プロファイルの既定値 < 設定ファイルの [defaults] < 各 [[search]] < コマンドライン
+    の順で上書きする。"""
     defaults, searches = load_config(args.config) if args.config else ({}, [])
     cli = {name: getattr(args, name) for name in COERCE if getattr(args, name, None) is not None}
     entries = [{"keyword": keyword.strip()} for keyword in args.keywords if keyword.strip()] + searches
@@ -239,7 +268,10 @@ def build_plans(args: argparse.Namespace) -> list[SearchPlan]:
         raise ConfigError("検索キーワードか --config を指定してください")
     plans = []
     for entry in entries:
-        values = {**DEFAULTS, **defaults, **entry, **cli}
+        profile = get_profile(cli.get("profile") or entry.get("profile") or defaults.get("profile") or "default")
+        values = {**DEFAULTS, **profile.defaults, **defaults, **entry, **cli, "profile": profile.name}
+        if values["scan"] and profile.card_key is None:
+            raise ConfigError("--scan は --profile pokeca と一緒に使ってください")
         # 除外キーワードは上書きせず足し合わせる
         values["exclude"] = list(
             dict.fromkeys(defaults.get("exclude", []) + entry.get("exclude", []) + cli.get("exclude", []))
@@ -284,6 +316,21 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--sources", type=_arg(_sources, f"{','.join(AVAILABLE)} のカンマ区切り"), metavar="サイト", help="検索するサイト（mercari,rakuma）。既定は mercari。rakuma は実験的")
     search.add_argument("--pages", type=_arg(_positive, "1以上の整数"), metavar="N", help="販売中の出品を何ページ取るか（1ページ最大120件、既定 2）")
     search.add_argument("--sold-pages", type=_arg(_positive, "1以上の整数"), metavar="N", help="相場計算用の売り切れを何ページ取るか（既定 2）")
+    search.add_argument(
+        "--profile",
+        type=_arg(_profile, f"{' / '.join(PROFILES)} のどれか"),
+        metavar="種類",
+        help="商品ジャンル: default（一般）/ pokeca（ポケモンカード: PSA10・未鑑定・BOXを分けて相場を出し、"
+        "オリパ・海外版・まとめ売り等を除外。転売目線が既定）",
+    )
+    search.add_argument(
+        "--scan",
+        action="store_true",
+        default=None,
+        help="キーワードを「探す範囲」として使い、見つかったカードごとに相場を調べる（--profile pokeca 用。"
+        "例: --scan \"ポケモンカード SAR\"。既定で1,000円未満は除く）",
+    )
+    search.add_argument("--scan-cards", type=_arg(_positive, "1以上の整数"), metavar="N", help="スキャンで相場を調べるカードの種類数（既定 20）")
 
     judge = parser.add_argument_group("判定")
     judge.add_argument("--min-discount", type=_arg(parse_ratio, "0.15・15・15% のような形"), metavar="割合", help="相場より何%%以上安ければ候補にするか（既定 10%%）")
@@ -298,9 +345,18 @@ def build_parser() -> argparse.ArgumentParser:
     output.add_argument("--html", type=Path, metavar="FILE", help="写真付きのHTMLレポートを保存する")
     output.add_argument("--csv", type=Path, metavar="FILE", help="CSV（Excel向け）で保存する")
     output.add_argument("--json", type=Path, metavar="FILE", help="JSONで保存する")
-    output.add_argument("--resale", action="store_true", default=None, help="相場で転売した場合の利益の目安も表示する")
-    output.add_argument("--fee-rate", type=_arg(parse_ratio, "0.1・10% のような形"), metavar="割合", help="転売の目安に使う販売手数料（既定 10%%）")
-    output.add_argument("--resale-shipping", type=_arg(_non_negative, "0以上の整数"), metavar="円", help="転売の目安に使う発送の送料（既定 750円）")
+    resale = parser.add_argument_group("転売目線")
+    resale.add_argument(
+        "--resale",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="相場で売った場合の利益（手数料・送料を差し引き）で採点する。--profile pokeca では既定でオン",
+    )
+    resale.add_argument("--min-profit", type=_arg(_non_negative, "0以上の整数"), metavar="円", help="これ未満の利益は候補にしない（既定 500円、pokeca は 1,000円）")
+    resale.add_argument("--min-roi", type=_arg(parse_ratio, "0.15・15% のような形"), metavar="割合", help="利益率（利益 ÷ 仕入れ値）の下限（既定 15%%）")
+    resale.add_argument("--min-sales", type=_arg(_non_negative, "0以上の整数"), metavar="件", help="直近30日の販売数がこれ未満なら候補にしない（既定 3）")
+    resale.add_argument("--fee-rate", type=_arg(parse_ratio, "0.1・10% のような形"), metavar="割合", help="販売手数料（既定 10%%）")
+    resale.add_argument("--resale-shipping", type=_arg(_non_negative, "0以上の整数"), metavar="円", help="売るときの送料（既定 750円、pokeca は 230円・BOXは520円以上）")
     output.add_argument("--no-color", action="store_true", help="色を付けずに表示する")
 
     watch = parser.add_argument_group("監視")
@@ -345,13 +401,12 @@ def _use_color(stream: TextIO, disabled: bool) -> bool:
 def run_all(
     plans: list[SearchPlan], sources: Mapping[str, Source], progress: Callable[[str], None]
 ) -> list[SearchResult]:
-    return [run_search(plan, sources, progress=progress) for plan in plans]
+    return [run_plan(plan, sources, progress=progress) for plan in plans]
 
 
 def _save_files(results: list[SearchResult], args: argparse.Namespace, progress: Callable[[str], None]) -> None:
-    resale = any(result.plan.settings.resale for result in results)
     if args.html:
-        write_html(results, args.html, top=args.top, resale=resale)
+        write_html(results, args.html, top=args.top)
         progress(f"HTMLレポートを保存しました: {args.html}")
     if args.csv:
         write_csv(results, args.csv)
@@ -394,7 +449,7 @@ def _watch(
             results = run_all(plans, sources, progress)
             if first:
                 for result in results:
-                    print_result(result, out, top=args.top, color=color, resale=result.plan.settings.resale)
+                    print_result(result, out, top=args.top, color=color)
                     _notify(args.webhook, "【フリマおすすめ】", result.plan.keyword, result.recommendations[:3], progress)
                 progress(f"監視を始めました。{minutes:g}分ごとに検索し直し、新しく見つかった候補だけを表示します（Ctrl+C で終了）")
             else:
@@ -412,7 +467,7 @@ def _watch(
                     found += len(fresh)
                     out.write(f"■ 新着「{result.plan.keyword}」 {datetime.now(JST):%H:%M}\n")
                     for rank, evaluation in fresh:
-                        for line in item_lines(rank, evaluation, resale=result.plan.settings.resale):
+                        for line in item_lines(rank, evaluation):
                             out.write(f"  {line}\n")
                         out.write("\n")
                     out.flush()
@@ -465,7 +520,7 @@ def main(
         progress("中断しました")
         return 130
     for result in results:
-        print_result(result, stdout, top=args.top, color=color, resale=result.plan.settings.resale)
+        print_result(result, stdout, top=args.top, color=color)
         _notify(args.webhook, "【フリマおすすめ】", result.plan.keyword, result.recommendations[:5], progress)
     stdout.flush()
     _save_files(results, args, progress)

@@ -113,3 +113,83 @@ def test_format_age():
     assert format_age(timedelta(minutes=59)) == "59分前"
     assert format_age(timedelta(hours=5)) == "5時間前"
     assert format_age(timedelta(days=3, hours=2)) == "3日前"
+
+
+# ---------------------------------------------------------------- 転売目線
+
+from furima_finder.market import PriceStats  # noqa: E402
+from furima_finder.profiles import POKECA  # noqa: E402
+
+CARD_TOKENS = text.tokens("リザードンex SAR")
+RESALE = Settings(resale=True, resale_shipping=230, min_profit=1000, buyer_shipping=300, min_match=0.5)
+
+
+def card_market(group="raw", median=10000, recent=10000, sales=25, trend=0.0, q1=9500, q3=10500):
+    stats = PriceStats(20, median, q1, q3, q1, q3, recent_median=recent, sales_30d=sales, trend=trend)
+    return MarketStats(overall=stats, groups={group: stats}, labels=dict(POKECA.group_labels), strict=True)
+
+
+def resale_ev(listing, now, market=None, settings=RESALE, tokens=CARD_TOKENS):
+    return evaluate(listing, market or card_market(), tokens, settings, now, POKECA)
+
+
+def test_resale_profit_roi_and_score(now):
+    result = resale_ev(make_listing("リザードンex SAR 201/165", 6000, condition=2), now)
+    assert result.recommended
+    assert result.expected_sale == 10000
+    assert result.profit == 9000 - 230 - 6000
+    assert result.roi == pytest.approx(2770 / 6000)
+    assert result.reasons[0] == "売値の目安 ¥10,000（未鑑定の相場・直近14日の中央値）、手数料10%と送料¥230を差し引き"
+    assert "直近30日で25件売れている" in result.reasons
+    # 利益 23 + 利益率 15 + 売れ行き 12 + 相場の動き 7 + 状態 9 + 出品者（不明）5
+    assert result.score == 71
+
+
+@pytest.mark.parametrize(
+    "price, settings, market, reason",
+    [
+        (8500, RESALE, None, "利益が少ない"),
+        (8000, Settings(resale=True, resale_shipping=230, min_profit=0), None, "利益率が低い"),
+        (6000, RESALE, card_market(sales=2), "売れ行きが少ない"),
+    ],
+)
+def test_resale_exclusions(price, settings, market, reason, now):
+    assert resale_ev(make_listing("リザードンex SAR 201/165", price), now, market, settings).excluded == reason
+
+
+def test_unknown_sales_activity_is_not_excluded(now):
+    result = resale_ev(make_listing("リザードンex SAR 201/165", 6000), now, card_market(recent=None, sales=None, trend=None))
+    assert result.recommended
+    assert result.expected_sale == 10000  # 直近の中央値がなければ全体の中央値
+
+
+def test_falling_and_rising_markets(now):
+    listing = make_listing("リザードンex SAR 201/165", 6000)
+    falling = resale_ev(listing, now, card_market(trend=-0.2))
+    rising = resale_ev(listing, now, card_market(trend=0.12))
+    assert "相場が下がっている（直近7日 −20%）" in falling.warnings
+    assert "相場が上がっている（直近7日 +12%）" in rising.reasons
+    assert rising.score - falling.score == 10
+
+
+def test_wide_spread_uses_conservative_sale_price(now):
+    result = resale_ev(make_listing("リザードンex SAR 201/165", 3000), now, card_market(q1=6000, q3=14000))
+    assert result.expected_sale == 6000
+    assert any("ばらつき" in warning for warning in result.warnings)
+
+
+def test_damaged_cards_warn_in_resale_mode(now):
+    result = resale_ev(make_listing("リザードンex SAR 201/165", 6000, condition=4), now)
+    assert any("傷・汚れあり" in warning for warning in result.warnings)
+
+
+def test_graded_card_needs_the_same_grade_market(now):
+    result = resale_ev(make_listing("【PSA10】リザードンex SAR 201/165", 20000), now)
+    assert result.excluded == "相場不明"
+
+
+def test_box_uses_larger_shipping(now):
+    market = card_market(group="box_shrink", median=30000, recent=30000)
+    box = make_listing("ポケモンカード 151 BOX シュリンク付き", 20000)
+    result = resale_ev(box, now, market, tokens=text.tokens("151 BOX"))
+    assert result.profit == 27000 - 520 - 20000

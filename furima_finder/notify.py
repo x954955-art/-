@@ -15,10 +15,14 @@ def format_message(keyword: str, evaluations: list[Evaluation], *, title: str = 
     lines = [f"{title}{keyword}"]
     for evaluation in evaluations:
         listing = evaluation.listing
+        if evaluation.profit is not None:
+            summary = f"仕入れ {yen(listing.price)} → 利益 {yen(evaluation.profit)}（利益率 {evaluation.roi:.0%}）"
+        else:
+            summary = f"{yen(listing.price)}（相場比 -{max(evaluation.discount, 0):.0%}）"
         details = [listing.condition_label or "", "送料込み" if listing.shipping_included else ""]
         detail = " / ".join(d for d in details if d)
         lines.append(
-            f"・{evaluation.score}点 {yen(listing.price)}（相場比 -{max(evaluation.discount, 0):.0%}）"
+            f"・{evaluation.score}点 {summary}"
             f"{' ' + detail if detail else ''} [{listing.source_label}]\n  {listing.title}\n  {listing.url}"
         )
     return "\n".join(lines)

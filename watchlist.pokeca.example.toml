@@ -1,0 +1,47 @@
+# ポケモンカードの転売候補を探す検索リストの見本です。コピーして使ってください。
+#   python -m furima_finder --config watchlist.pokeca.example.toml --html pokeca.html
+#   python -m furima_finder --config watchlist.pokeca.example.toml --watch 15   # 15分ごとに新着だけ表示
+#
+# 値の優先順位: [defaults] < 各 [[search]] < コマンドラインで指定した値
+
+[defaults]
+profile = "pokeca"     # PSA10・未鑑定・BOXを分けて相場を出し、オリパ・海外版・まとめ売り等を除外
+min_profit = 1000      # 手数料10%と送料を引いて、これ以上の利益が出るものだけ
+min_roi = "15%"        # 利益 ÷ 仕入れ値
+min_sales = 3          # 直近30日にこれ以上売れているカードだけ（売れ残りを避ける）
+
+# --- スキャン: 広く集めて、見つかったカードごとに相場を調べる ---------------------------
+# 1回のスキャンで「販売中の検索2回 ＋ カードの種類数（scan_cards）回 ＋ 上位10件の詳細確認」の通信をします。
+[[search]]
+keyword = "ポケモンカード SAR"
+scan = true
+scan_cards = 20
+min_price = 2000
+max_price = 30000
+
+[[search]]
+keyword = "ポケモンカード SR"
+scan = true
+scan_cards = 15
+min_price = 2000
+max_price = 30000
+
+[[search]]
+keyword = "ポケモンカード MUR"
+scan = true
+scan_cards = 10
+min_price = 2000
+
+# --- 狙い撃ち: 特定のカードやBOXを見張る ---------------------------------------------------
+# カード名だけだと別のカード（同じキャラのU・SRなど）が混ざるので、レアリティやカード番号を入れる
+[[search]]
+keyword = "リザードンex SAR 201/165"
+
+[[search]]
+keyword = "PSA10 リザードンex SAR 201/165"   # 鑑定品は鑑定品の相場とだけ比べる
+
+[[search]]
+keyword = "ナンジャモ SAR 096/071"
+
+[[search]]
+keyword = "ポケモンカード 151 BOX シュリンク付き"

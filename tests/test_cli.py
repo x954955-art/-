@@ -57,7 +57,7 @@ def test_search_prints_ranked_recommendations():
 
 def test_outputs_html_csv_and_json(tmp_path):
     html_path, csv_path, json_path = tmp_path / "r.html", tmp_path / "r.csv", tmp_path / "r.json"
-    code, _, err = run(["Switch 有機EL", "--html", str(html_path), "--csv", str(csv_path), "--json", str(json_path), "--resale"])
+    code, _, err = run(["Switch 有機EL", "--html", str(html_path), "--csv", str(csv_path), "--json", str(json_path)])
     assert code == 0
 
     page = html_path.read_text(encoding="utf-8")
@@ -65,7 +65,7 @@ def test_outputs_html_csv_and_json(tmp_path):
     assert "Switch 有機EL &lt;ネオン&gt;" in page  # エスケープされている
     assert 'src="https://example.com/a.jpg"' in page
     assert page.count('<article class="card"') == 2
-    assert "転売の目安" in page
+    assert "古物商" not in page
     assert "HTMLレポートを保存しました" in err
 
     raw = csv_path.read_bytes()
@@ -78,7 +78,33 @@ def test_outputs_html_csv_and_json(tmp_path):
     data = json.loads(json_path.read_text(encoding="utf-8"))
     assert data[0]["keyword"] == "Switch 有機EL"
     assert data[0]["market"]["overall"]["median"] == 30000
-    assert data[0]["recommendations"][0]["profit"] == 30000 * 0.9 - 750 - 21000
+    assert data[0]["recommendations"][0]["profit"] is None
+
+
+def test_resale_mode_ranks_by_profit(tmp_path):
+    html_path, csv_path, json_path = tmp_path / "r.html", tmp_path / "r.csv", tmp_path / "r.json"
+    code, out, _ = run(
+        ["Switch 有機EL", "--resale", "--no-color", "--html", str(html_path), "--csv", str(csv_path), "--json", str(json_path)]
+    )
+    assert code == 0
+    # 売値の目安 30,000円 × 0.9 − 送料 750円 − 仕入れ 21,000円
+    assert "仕入れ ¥21,000 → 利益 ¥5,250（利益率 25%）" in out
+    assert "直近30日で12件売れている" in out
+    assert "利益率が低い 1件" in out  # 25,000円の出品は利益率5%
+
+    page = html_path.read_text(encoding="utf-8")
+    assert '<span class="badge profit">利益 ¥5,250</span>' in page
+    assert '<option value="profit">利益が大きい順</option>' in page
+    assert "古物商許可" in page
+
+    rows = list(csv.reader(io.StringIO(csv_path.read_bytes().decode("utf-8-sig"))))
+    header = rows[0]
+    assert rows[1][header.index("利益")] == "5250"
+    assert rows[1][header.index("利益率(%)")] == "25.0"
+    assert rows[1][header.index("直近30日の販売数")] == "12"
+
+    recommendation = json.loads(json_path.read_text(encoding="utf-8"))[0]["recommendations"][0]
+    assert (recommendation["expected_sale"], recommendation["profit"], recommendation["roi"]) == (30000, 5250, 0.25)
 
 
 def test_no_results_message():
@@ -162,11 +188,14 @@ def test_config_errors(tmp_path, content, message):
         cli.load_config(path)
 
 
-def test_example_config_is_valid():
+@pytest.mark.parametrize("name", ["watchlist.example.toml", "watchlist.pokeca.example.toml"])
+def test_example_configs_are_valid(name):
     from pathlib import Path
 
-    defaults, searches = cli.load_config(Path(__file__).parent.parent / "watchlist.example.toml")
-    assert searches and all("keyword" in entry for entry in searches)
+    path = Path(__file__).parent.parent / name
+    args = cli.build_parser().parse_args(["--config", str(path)])
+    plans = cli.build_plans(args)
+    assert plans and all(plan.keyword for plan in plans)
 
 
 def test_watch_shows_only_new_listings_and_notifies(monkeypatch):
@@ -224,3 +253,59 @@ def test_ctrl_c_during_search_exits_quietly():
     code, _, err = run(["Switch"], sources={"mercari": Interrupting()})
     assert code == 130
     assert "中断しました" in err
+
+
+def plans_for(argv, tmp_path=None, config=None):
+    if config is not None:
+        path = tmp_path / "c.toml"
+        path.write_text(config, encoding="utf-8")
+        argv = [*argv, "--config", str(path)]
+    return cli.build_plans(cli.build_parser().parse_args(argv))
+
+
+def test_pokeca_profile_defaults_and_overrides():
+    (plan,) = plans_for(["リザードンex SAR", "--profile", "pokeca"])
+    assert plan.profile == "pokeca"
+    assert plan.settings.resale is True
+    assert (plan.settings.min_profit, plan.settings.resale_shipping, plan.settings.buyer_shipping) == (1000, 230, 300)
+    (plan,) = plans_for(["リザードンex SAR", "--profile", "ポケカ", "--no-resale", "--min-profit", "2000"])
+    assert plan.profile == "pokeca"
+    assert plan.settings.resale is False and plan.settings.min_profit == 2000
+    (plan,) = plans_for(["Switch"])
+    assert plan.profile == "default" and plan.settings.resale is False and plan.settings.min_profit == 500
+
+
+def test_profile_from_config_file(tmp_path):
+    config = '[defaults]\nprofile = "pokeca"\nmin_profit = 1500\n\n[[search]]\nkeyword = "ポケモンカード SAR"\nscan = true\nscan_cards = 30\n'
+    (plan,) = plans_for([], tmp_path, config)
+    assert (plan.profile, plan.scan, plan.scan_cards) == ("pokeca", True, 30)
+    assert plan.settings.min_profit == 1500  # [defaults] はプロファイルの既定値より優先
+
+
+def test_scan_requires_a_card_profile(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["ポケモンカード SAR", "--scan"], sources=fake_sources())
+    assert "--profile pokeca" in capsys.readouterr().err
+
+
+def test_unknown_profile_is_rejected(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["x", "--profile", "yugioh"], sources=fake_sources())
+    assert "default / pokeca のどれかで指定してください" in capsys.readouterr().err
+
+
+def test_scan_end_to_end_output(tmp_path):
+    from datetime import timedelta
+
+    from .conftest import make_listing as listing
+
+    on_sale = [listing("リザードンex SAR 201/165", 6000, id="m9", condition=2, age=timedelta(hours=1))]
+    sold = [listing(f"リザードンex SAR 201/165 {i}", 10000, sold=True, condition=2) for i in range(8)]
+    sources = {"mercari": FakeSource(sold=sold, on_sale=on_sale)}
+    code, out, err = run(["ポケモンカード SAR", "--profile", "pokeca", "--scan", "--no-color", "--details", "0"], sources=sources)
+    assert code == 0
+    assert "■「ポケモンカード SAR」のスキャン" in out
+    assert "カード番号ごとに売り切れ価格を調べ" in out
+    assert "仕入れ ¥6,000 → 利益 ¥2,770（利益率 46%）" in out
+    assert "売値の目安 ¥10,000（未鑑定の相場・直近14日の中央値）" in out
+    assert "[1/1] 201/165 の売り切れ価格を取得中" in err
