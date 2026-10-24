@@ -18,6 +18,8 @@ CONDITION_LABELS = {
 SOURCE_LABELS = {
     "mercari": "メルカリ",
     "rakuma": "ラクマ",
+    "yahoo": "Yahoo!フリマ",
+    "snkrdunk": "スニダン",
 }
 
 
@@ -67,6 +69,7 @@ class Listing:
     is_auction: bool = False
     auction_end: datetime | None = None
     auction_bids: int | None = None
+    caution: str | None = None  # サイト特有の注意（例: スニダンは表示が最安値）
     # 以下は商品詳細を取得したときだけ埋まる
     description: str | None = None
     likes: int | None = None

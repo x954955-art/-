@@ -13,7 +13,7 @@ from urllib.parse import urljoin
 
 from ..http import HttpClient
 from ..models import Listing, SearchQuery
-from .. import text
+from .base import HTML_HEADERS, matches_query
 
 SEARCH_URL = "https://fril.jp/s"
 _PRICE = re.compile(r"\d[\d,]*")
@@ -60,16 +60,6 @@ def parse_search_html(html: str, *, sold: bool) -> list[Listing]:
     return listings
 
 
-def _matches_query(listing: Listing, query: SearchQuery) -> bool:
-    """サーバー側で絞り込めない条件を手元で適用する。"""
-    if query.price_min and listing.price < query.price_min:
-        return False
-    if query.price_max and listing.price > query.price_max:
-        return False
-    title = text.normalize(listing.title)
-    return not any(text.normalize(word) in title for word in query.exclude)
-
-
 class RakumaSource:
     name = "rakuma"
     label = "ラクマ"
@@ -79,24 +69,31 @@ class RakumaSource:
     def __init__(self, http: HttpClient) -> None:
         self.http = http
 
+    def requests_for(self, query: SearchQuery, page: int = 1) -> list[tuple[str, dict[str, str]]]:
+        params = {
+            "query": query.keyword,
+            "order": "desc",
+            "sort": "created_at",
+            "transaction": "soldout" if query.sold else "selling",
+        }
+        if page > 1:
+            params["page"] = str(page)
+        return [(SEARCH_URL, params)]
+
+    def parse(self, body: str, query: SearchQuery) -> list[Listing]:
+        return parse_search_html(body, sold=query.sold)
+
     def search(self, query: SearchQuery) -> list[Listing]:
         listings: list[Listing] = []
         seen: set[str] = set()
         for page in range(1, max(1, query.pages) + 1):
-            params = {
-                "query": query.keyword,
-                "order": "desc",
-                "sort": "created_at",
-                "transaction": "soldout" if query.sold else "selling",
-            }
-            if page > 1:
-                params["page"] = str(page)
-            response = self.http.request("GET", SEARCH_URL, params=params)
-            fresh = [item for item in parse_search_html(response.text, sold=query.sold) if item.key not in seen]
+            ((url, params),) = self.requests_for(query, page)
+            response = self.http.request("GET", url, params=params, headers=HTML_HEADERS)
+            fresh = [item for item in self.parse(response.text, query) if item.key not in seen]
             if not fresh:
                 break
             seen.update(item.key for item in fresh)
-            listings.extend(item for item in fresh if _matches_query(item, query))
+            listings.extend(item for item in fresh if matches_query(item, query))
         return listings
 
     def fetch_details(self, listing: Listing) -> None:

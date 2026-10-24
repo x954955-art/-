@@ -175,7 +175,7 @@ def test_config_file_precedence(tmp_path):
         ('[[search]]\nkeyword = "a"\nunknown = 1\n', "不明な項目「unknown」"),
         ('[[search]]\nmax_price = 100\n', "keyword がありません"),
         ('[[search]]\nkeyword = "a"\npages = 0\n', "pages の値が正しくありません"),
-        ('[[search]]\nkeyword = "a"\nsources = "yahoo"\n', "sources の値が正しくありません"),
+        ('[[search]]\nkeyword = "a"\nsources = "amazon"\n', "sources の値が正しくありません"),
         ('[defaults]\nkeyword = "a"\n', "[defaults] には keyword を書けません"),
         ("[[search]\n", "書式が正しくありません"),
         ('[other]\nx = 1\n', "不明な項目があります: other"),
@@ -351,7 +351,7 @@ def test_config_with_bom_and_wrong_encoding(tmp_path):
         cli.load_config(sjis)
 
 
-@pytest.mark.parametrize("name", ["pokeca_search.bat", "pokeca_watch.bat"])
+@pytest.mark.parametrize("name", ["pokeca_search.bat", "pokeca_watch.bat", "check_sites.bat"])
 def test_windows_batch_files(name):
     from pathlib import Path
 
@@ -360,4 +360,4 @@ def test_windows_batch_files(name):
     assert raw.count(b"\r\n") == raw.count(b"\n")  # 改行は CRLF
     text = raw.decode("ascii")
     assert 'cd /d "%~dp0"' in text  # ダブルクリックしても自分のフォルダで動く
-    assert "--config pokeca.toml" in text and "--open" in text
+    assert ("--config pokeca.toml" in text and "--open" in text) or "--probe" in text

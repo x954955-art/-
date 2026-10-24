@@ -339,6 +339,8 @@ def evaluate(
                 result.reasons.append(
                     f"入札上限の目安 {yen(max_bid)}（ここまでで落札できれば利益{yen(settings.min_profit)}以上）"
                 )
+    if listing.caution:
+        result.warnings.append(listing.caution)
     if listing.likes is not None and listing.likes >= POPULAR_LIKES:
         result.warnings.append(f"いいね{listing.likes}件（人気で売れやすい・早めの判断を）")
 

@@ -19,6 +19,7 @@ from . import __version__
 from .finder import CONDITION_FILTERS, SearchPlan, SearchResult, run_plan
 from .http import HttpClient
 from .notify import format_message, send_webhook
+from .probe import run_probe
 from .profiles import PROFILES, get_profile
 from .report import JST, item_lines, print_result, write_csv, write_html, write_json
 from .scoring import Settings
@@ -319,7 +320,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=list(CONDITION_FILTERS),
         help="商品の状態の下限: new=新品・未使用 / near-new=未使用に近い以上 / good=目立った傷や汚れなし以上 / fair=やや傷や汚れあり以上 / any=指定なし（既定）",
     )
-    search.add_argument("--sources", type=_arg(_sources, f"{','.join(AVAILABLE)} のカンマ区切り"), metavar="サイト", help="検索するサイト（mercari,rakuma）。既定は mercari。rakuma は実験的")
+    search.add_argument("--sources", type=_arg(_sources, f"{','.join(AVAILABLE)} のカンマ区切り"), metavar="サイト", help="検索するサイト（mercari,rakuma,yahoo,snkrdunk）。既定は mercari。rakuma・yahoo（Yahoo!フリマ）・snkrdunk（スニダン）は実験的")
     search.add_argument("--pages", type=_arg(_positive, "1以上の整数"), metavar="N", help="販売中の出品を何ページ取るか（1ページ最大120件、既定 2）")
     search.add_argument("--sold-pages", type=_arg(_positive, "1以上の整数"), metavar="N", help="相場計算用の売り切れを何ページ取るか（既定 2）")
     search.add_argument(
@@ -369,6 +370,14 @@ def build_parser() -> argparse.ArgumentParser:
     watch = parser.add_argument_group("監視")
     watch.add_argument("--watch", type=float, metavar="分", help=f"N分ごとに検索し直し、新しく見つかった候補だけを表示する（最短{MIN_WATCH_MINUTES:g}分）")
     watch.add_argument("--webhook", metavar="URL", help="候補を Discord / Slack の Webhook に送る")
+
+    diagnosis = parser.add_argument_group("診断")
+    diagnosis.add_argument(
+        "--probe",
+        action="store_true",
+        help="各サイト（メルカリ・ラクマ・Yahoo!フリマ・スニダン）から取得できるかを調べて表示する"
+        "（キーワードを省くと「ポケモンカード SAR」）",
+    )
 
     network = parser.add_argument_group("通信")
     network.add_argument("--interval", type=float, default=1.5, metavar="秒", help=f"リクエストの間隔（既定 1.5秒、最短{MIN_REQUEST_INTERVAL:g}秒）")
@@ -513,6 +522,11 @@ def main(
     _prepare_console(stderr)
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.probe:
+        keyword = args.keywords[0] if args.keywords else "ポケモンカード SAR"
+        http = HttpClient(min_interval=max(args.interval, MIN_REQUEST_INTERVAL))
+        run_probe(keyword, http, stdout, Path("probe"))
+        return 0
     if args.open and not args.html:
         args.html = Path("report.html")
     try:

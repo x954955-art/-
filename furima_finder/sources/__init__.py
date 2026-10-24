@@ -6,10 +6,14 @@ from ..http import HttpClient
 from .base import Source
 from .mercari import MercariSource
 from .rakuma import RakumaSource
+from .snkrdunk import SnkrdunkSource
+from .yahoo import YahooFleaSource
 
 AVAILABLE = {
     "mercari": MercariSource,
     "rakuma": RakumaSource,
+    "yahoo": YahooFleaSource,
+    "snkrdunk": SnkrdunkSource,
 }
 
 
@@ -20,4 +24,12 @@ def create_sources(names: list[str], http: HttpClient) -> dict[str, Source]:
     return {name: AVAILABLE[name](http) for name in dict.fromkeys(names)}
 
 
-__all__ = ["AVAILABLE", "MercariSource", "RakumaSource", "Source", "create_sources"]
+__all__ = [
+    "AVAILABLE",
+    "MercariSource",
+    "RakumaSource",
+    "SnkrdunkSource",
+    "Source",
+    "YahooFleaSource",
+    "create_sources",
+]

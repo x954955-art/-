@@ -235,3 +235,24 @@ def test_scan_stops_after_sold_errors(now):
 
 def test_card_key_helper_matches_fixture():
     assert pokeca_card_key("リザードンex SAR 201/165 151") == "201/165"
+
+
+def test_scan_uses_buy_only_sites_for_candidates_and_sold_sites_for_prices(now):
+    mercari = scan_fixture()
+
+    class BuyOnly(FakeSource):
+        supports_sold = False
+        supports_details = False
+
+    yahoo = BuyOnly(name="yahoo", label="Yahoo!フリマ", on_sale=[
+        card("リザードンex SAR 201/165 美品", 5500, id="z1", source="yahoo", age=timedelta(minutes=20)),
+    ])
+    plan = SearchPlan(
+        keyword="ポケモンカード SAR", profile="pokeca", scan=True, details=0,
+        sources=["mercari", "yahoo"], settings=POKECA_SETTINGS,
+    )
+    result = run_scan(plan, {"mercari": mercari, "yahoo": yahoo}, now=now)
+    assert all(not query.sold for query in yahoo.queries)  # 売り切れは聞かない
+    assert any(query.sold for query in mercari.queries)
+    ids = [e.listing.id for e in result.recommendations]
+    assert ids[:2] == ["z1", "zard-cheap"]  # Yahoo!フリマの出品もメルカリの相場で採点される

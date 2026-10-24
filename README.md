@@ -84,6 +84,20 @@ python -m furima_finder --config watchlist.pokeca.example.toml --watch 15 --webh
 - **メルカリの規約**：2025年10月22日の改定で、事業者（継続的に転売・せどりをする個人事業主を含む）はフリマアプリ「メルカリ」を使えず、「メルカリShops」への出店が必要になりました。
 - 当てはまるか迷う場合は、お住まいの地域の警察署（古物商の窓口）やメルカリのヘルプで確認してください。
 
+## 対応サイト
+
+| サイト | 指定名 | できること | 状態 |
+|---|---|---|---|
+| メルカリ | `mercari` | 販売中を探す・売り切れから相場を出す・出品者評価や説明文の確認 | 動作確認済み |
+| ラクマ | `rakuma` | 販売中を探す・売り切れから相場を出す | 実験的 |
+| Yahoo!フリマ | `yahoo` | 販売中を探す（相場はメルカリ・ラクマの売り切れを使う） | 実験的 |
+| スニダン | `snkrdunk` | 商品ごとの最安値を探す（状態・手数料・送料は商品ページで確認） | 実験的 |
+
+使うサイトは `--sources mercari,rakuma,yahoo,snkrdunk` か、設定ファイルの `sources = [...]` で選びます。
+実験的なサイトは、作者の環境から接続して確かめられていないため、ページの形が想定と違うと取得できません。
+**`check_sites.bat` をダブルクリック**（または `python -m furima_finder --probe`）すると、各サイトから取得できるか、
+ページがどんな形かを表示します（取得したページは `probe` フォルダに保存）。その表示があれば読み取り方を直せます。
+
 ## しくみ
 
 1. **相場を調べる** — 同じキーワードの「売り切れ」の出品を最大240件集め、中央値を相場とします。
@@ -144,7 +158,7 @@ python -m furima_finder "iPad mini 6 64GB" "AirPods Pro 第2世代" --csv result
 | `--exclude` | 除外キーワード（例 `--exclude "ジャンク 箱のみ"`） | なし |
 | `--min-discount` | 相場より何%以上安ければ候補にするか（`15%`・`15`・`0.15` どれでも可） | 10% |
 | `--market-price` | 相場を自分で決める（売り切れから計算しない） | なし |
-| `--sources` | 検索するサイト（`mercari`, `rakuma`） | mercari |
+| `--sources` | 検索するサイト（`mercari`, `rakuma`, `yahoo`, `snkrdunk`）。rakuma 以降は実験的 | mercari |
 | `--details` | 上位何件の出品者評価・説明文を確認するか（0 で確認しない） | 10 |
 | `--top` | 表示件数 | 20 |
 | `--html` / `--csv` / `--json` | 結果をファイルに保存 | なし |
@@ -247,6 +261,10 @@ furima_finder/
   sources/
     mercari.py    メルカリ（Web版と同じAPI。DPoP署名付き）
     rakuma.py     ラクマ（検索結果ページの解析・実験的）
+    yahoo.py      Yahoo!フリマ（検索ページの埋め込みJSON・実験的）
+    snkrdunk.py   スニダン（検索ページの埋め込みJSON・実験的）
+    embedded.py   ページに埋め込まれたJSONから商品の並びを探す共通処理
+  probe.py        各サイトの取得診断（--probe）
 ```
 
 新しいサイトを足すときは `sources/` に `search()` と `fetch_details()` を持つクラスを作り、`sources/__init__.py` の `AVAILABLE` に登録します。
