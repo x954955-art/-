@@ -17,7 +17,7 @@ from urllib.parse import urljoin
 
 from .. import text
 from ..http import FetchError, HttpClient
-from ..models import CONDITION_LABELS, Listing, SearchQuery
+from ..models import CONDITION_LABELS, Listing, SearchQuery, Seller
 from .base import HTML_HEADERS, matches_query
 
 TITLE_KEYS = ("title", "name", "itemName", "productName", "itemTitle", "displayName")
@@ -253,6 +253,27 @@ def extract_link_cards(html: str, base_url: str) -> list[dict[str, Any]]:
     return cards
 
 
+def _seller(item: dict[str, Any]) -> Seller | None:
+    """出品者の評価（Yahoo!フリマは seller.goodRatio と seller.numRating）。"""
+    seller = item.get("seller")
+    if not isinstance(seller, dict):
+        return None
+    count = _to_int(_first(seller, ("numRating", "numRatings", "ratingCount", "reviewCount")))
+    if count is None:
+        return None
+    try:
+        ratio = float(_first(seller, ("goodRatio", "goodRate", "positiveRatio")))
+    except (TypeError, ValueError):
+        ratio = None
+    seller_id = str(_first(seller, ("id", "sellerId")) or "")
+    if ratio is None:
+        return Seller(id=seller_id, num_ratings=count, breakdown_known=False)
+    if ratio > 1:  # 99.5 のようなパーセント表記
+        ratio /= 100
+    good = round(count * min(max(ratio, 0.0), 1.0))
+    return Seller(id=seller_id, good=good, bad=count - good, num_ratings=count)
+
+
 def _sold(item: dict[str, Any]) -> bool:
     value = _first(item, STATUS_KEYS)
     if isinstance(value, str):
@@ -298,6 +319,7 @@ def to_listing(
         created_at=_time(item),
         thumbnail=_image(item),
         caution=caution,
+        seller=_seller(item),
     )
 
 

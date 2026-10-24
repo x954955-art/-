@@ -99,6 +99,8 @@ def test_yahoo_reads_open_listings_from_the_search_page():
     assert first.url == "https://paypayfleamarket.yahoo.co.jp/item/z100000001"
     assert first.shipping_included is True
     assert first.condition == 2
+    assert (first.seller.total_ratings, round(first.seller.good_ratio, 2)) == (150, 0.99)
+    assert (listings[1].seller.total_ratings, listings[1].seller.good_ratio) == (10, 0.8)
     assert listings[1].price == 7500
     (url, params), = session.calls
     assert url.startswith("https://paypayfleamarket.yahoo.co.jp/search/%E3%83%9D")
@@ -175,3 +177,13 @@ def test_snkrdunk_reads_product_links_from_html():
 def test_html_links_are_not_used_for_json_sites():
     yahoo, _ = source(YahooFleaSource, [Response((FIXTURES / "snkrdunk_search_html.html").read_text(encoding="utf-8")), Response("{}")])
     assert yahoo.search(SearchQuery(keyword="SAR")) == []
+
+
+
+def test_seller_without_ratio_keeps_the_count_only():
+    listing = to_listing({"id": "z1", "title": "x SAR", "price": 100, "seller": {"id": "s", "numRating": 3}},
+                         source="yahoo", base_url="", url_for_id=str)
+    assert listing.seller.total_ratings == 3 and listing.seller.good_ratio is None
+    no_rating = to_listing({"id": "z2", "title": "x SAR", "price": 100, "seller": {"id": "s"}},
+                           source="yahoo", base_url="", url_for_id=str)
+    assert no_rating.seller is None
