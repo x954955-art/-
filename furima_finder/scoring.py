@@ -192,7 +192,7 @@ def _warn_if_too_cheap(result: Evaluation) -> None:
     if result.discount >= TOO_CHEAP:
         message = "相場の半額以下：偽物・説明不足・写真と違う等がないかよく確認"
         if result.era is not None and result.era.points >= OLD_ERA_POINTS:
-            message += "（古いカードはコピー品も出回っています）"
+            message += "（古いものはコピー品も出回っています）"
         result.warnings.append(message)
 
 
@@ -246,7 +246,9 @@ def _movement_points(result: Evaluation, stats: PriceStats) -> int:
         points += UNKNOWN_ERA_POINTS
     else:
         points += era.points
-        if era.points >= OLD_ERA_POINTS:
+        if era.points > 0 and era.note:
+            result.reasons.append(era.note)
+        elif era.points >= OLD_ERA_POINTS:
             result.reasons.append(f"古い年代のカード（{era.label}・{era.years}）：再販がなく値上がりしやすい")
         elif era.points > 0:
             result.reasons.append(f"再販が終わった年代のカード（{era.label}・{era.years}）")

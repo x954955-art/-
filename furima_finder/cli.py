@@ -69,6 +69,10 @@ EXAMPLES = """\
 
   # 遊戯王: プリシク・25thシク・レリーフなどを、カード番号とレアリティごとに相場を調べて探す
   python -m furima_finder --profile yugioh --scan "遊戯王 プリシク" --max-price 50000 --html yugioh.html
+
+  # ゲーム機・ソフト: 本体はモデルごと、ソフトは新品・中古・箱なしごとに相場を調べる
+  python -m furima_finder --profile game --scan "Nintendo Switch 本体" --html game.html
+  python -m furima_finder --profile game "マリオカート8 デラックス"
 """
 
 
@@ -288,7 +292,7 @@ def build_plans(args: argparse.Namespace) -> list[SearchPlan]:
         profile = get_profile(cli.get("profile") or entry.get("profile") or defaults.get("profile") or "default")
         values = {**DEFAULTS, **profile.defaults, **defaults, **entry, **cli, "profile": profile.name}
         if values["scan"] and profile.card_key is None:
-            raise ConfigError("--scan は --profile pokeca・onepiece・yugioh のどれかと一緒に使ってください")
+            raise ConfigError("--scan は --profile pokeca・onepiece・yugioh・game のどれかと一緒に使ってください")
         # 除外キーワードは上書きせず足し合わせる
         values["exclude"] = list(
             dict.fromkeys(defaults.get("exclude", []) + entry.get("exclude", []) + cli.get("exclude", []))
@@ -344,13 +348,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="商品ジャンル: default（一般）/ pokeca（ポケモンカード: PSA10・未鑑定・BOXを分けて相場を出し、"
         "オリパ・海外版・まとめ売り等を除外）/ onepiece（ワンピースカード: カード番号と"
         "パラレル・コミパラ・SP などの違いでカードを見分ける）/ yugioh（遊戯王: カード番号とレアリティで"
-        "カードを見分ける）。pokeca・onepiece・yugioh は転売目線が既定",
+        "カードを見分ける）/ game（ゲーム機・ソフト: 本体はモデルごと、新品・中古・箱なし・ジャンクで相場を分ける）。"
+        "default 以外は転売目線が既定",
     )
     search.add_argument(
         "--scan",
         action="store_true",
         default=None,
-        help="キーワードを「探す範囲」として使い、見つかったカードごとに相場を調べる（--profile pokeca・onepiece・yugioh 用。"
+        help="キーワードを「探す範囲」として使い、見つかったカードごとに相場を調べる（--profile pokeca・onepiece・yugioh・game 用。"
         "例: --scan \"ポケモンカード SAR\"。既定で1,000円未満は除く）",
     )
     search.add_argument("--scan-cards", type=_arg(_positive, "1以上の整数"), metavar="N", help="スキャンで相場を調べるカードの種類数（既定 20）")
@@ -373,13 +378,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--resale",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="相場で売った場合の利益（手数料・送料を差し引き）で採点する。--profile pokeca・onepiece・yugioh では既定でオン",
+        help="相場で売った場合の利益（手数料・送料を差し引き）で採点する。default 以外のプロファイルでは既定でオン",
     )
     resale.add_argument("--min-profit", type=_arg(_non_negative, "0以上の整数"), metavar="円", help="これ未満の利益は候補にしない（既定 500円、カードのプロファイルは 1,000円）")
     resale.add_argument("--min-roi", type=_arg(parse_ratio, "0.15・15% のような形"), metavar="割合", help="利益率（利益 ÷ 仕入れ値）の下限（既定 15%%）")
     resale.add_argument("--min-sales", type=_arg(_non_negative, "0以上の整数"), metavar="件", help="直近30日の販売数がこれ未満なら候補にしない（既定 3）")
     resale.add_argument("--fee-rate", type=_arg(parse_ratio, "0.1・10% のような形"), metavar="割合", help="販売手数料（既定 10%%）")
-    resale.add_argument("--resale-shipping", type=_arg(_non_negative, "0以上の整数"), metavar="円", help="売るときの送料（既定 750円、カードのプロファイルは 230円・BOXは520円以上）")
+    resale.add_argument("--resale-shipping", type=_arg(_non_negative, "0以上の整数"), metavar="円", help="売るときの送料（既定 750円、カードとゲームソフトは 230円・BOXは520円以上・ゲーム機本体は1,000〜1,500円）")
     output.add_argument("--open", action="store_true", help="保存したHTMLレポートをブラウザで開く（監視モードでは最初の1回だけ。--html がなければ report.html に保存）")
     output.add_argument("--no-color", action="store_true", help="色を付けずに表示する")
 

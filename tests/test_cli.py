@@ -193,7 +193,8 @@ def test_config_errors(tmp_path, content, message):
 
 
 @pytest.mark.parametrize(
-    "name", ["watchlist.example.toml", "watchlist.pokeca.example.toml", "pokeca.toml", "onepiece.toml", "yugioh.toml"]
+    "name",
+    ["watchlist.example.toml", "watchlist.pokeca.example.toml", "pokeca.toml", "onepiece.toml", "yugioh.toml", "game.toml"],
 )
 def test_example_configs_are_valid(name):
     from pathlib import Path
@@ -344,7 +345,7 @@ def test_scan_requires_a_card_profile(capsys):
 def test_unknown_profile_is_rejected(capsys):
     with pytest.raises(SystemExit):
         cli.main(["x", "--profile", "mtg"], sources=fake_sources())
-    assert "default / pokeca / onepiece / yugioh のどれかで指定してください" in capsys.readouterr().err
+    assert "default / pokeca / onepiece / yugioh / game のどれかで指定してください" in capsys.readouterr().err
 
 
 def test_scan_end_to_end_output(tmp_path):
@@ -358,7 +359,7 @@ def test_scan_end_to_end_output(tmp_path):
     code, out, err = run(["ポケモンカード SAR", "--profile", "pokeca", "--scan", "--no-color", "--details", "0"], sources=sources)
     assert code == 0
     assert "■「ポケモンカード SAR」のスキャン" in out
-    assert "カードごとに売り切れ価格を調べ" in out
+    assert "見つかった商品ごと（カードはカード番号、ゲーム機はモデル）に売り切れ価格を調べ" in out
     assert "仕入れ ¥6,000 → 利益 ¥2,770（利益率 46%）" in out
     assert "売値の目安 ¥10,000（未鑑定の相場・直近14日の中央値）" in out
     assert "[1/1] 201/165 の売り切れ価格を取得中" in err
@@ -448,7 +449,7 @@ def test_config_with_bom_and_wrong_encoding(tmp_path):
     "name",
     [
         "pokeca_search.bat", "pokeca_watch.bat", "onepiece_search.bat", "onepiece_watch.bat",
-        "yugioh_search.bat", "yugioh_watch.bat", "check_sites.bat",
+        "yugioh_search.bat", "yugioh_watch.bat", "game_search.bat", "game_watch.bat", "check_sites.bat",
     ],
 )
 def test_windows_batch_files(name):

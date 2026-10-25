@@ -47,7 +47,7 @@ def market_lines(market: MarketStats, *, fetch_failed: bool = False) -> list[str
 
 def _price_lines(market: MarketStats, *, fetch_failed: bool) -> list[str]:
     if market.basis == "scan":
-        return ["カードごとに売り切れ価格を調べ、そのカードの相場と比べています"]
+        return ["見つかった商品ごと（カードはカード番号、ゲーム機はモデル）に売り切れ価格を調べ、その相場と比べています"]
     if market.overall is None:
         if fetch_failed:
             return ["相場: 出品を取得できなかったため算出できませんでした"]

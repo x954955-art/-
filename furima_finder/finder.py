@@ -315,21 +315,27 @@ def run_scan(
     targets = ordered[: plan.scan_cards]
     markets: dict[str, MarketStats] = {}
     sold_sources = [source for source in active if source.supports_sold]
+    # 「PS5 本体」のように、違うカード（モデル）でも同じ言葉で売り切れを探すときは1回だけ取得する
+    sold_cache: dict[str, list[Listing]] = {}
     for index, (key, listings) in enumerate(targets, 1):
         if not sold_sources:
             notes.append("取得エラーが続いたため、残りのカードの相場確認を中止しました")
             break
-        progress(f"[{index}/{len(targets)}] {key} の売り切れ価格を取得中…")
-        sold_query = SearchQuery(
-            keyword=card_query(key, listings, profile), exclude=plan.exclude, conditions=conditions, sold=True, pages=1
-        )
-        sold: list[Listing] = []
-        for source in list(sold_sources):
-            try:
-                sold.extend(source.search(sold_query))
-            except FetchError as exc:
-                errors.append(f"{source.label}（売り切れ {key}）: {exc}")
-                sold_sources.remove(source)  # 同じエラーを繰り返さない
+        sold_keyword = card_query(key, listings, profile)
+        sold = sold_cache.get(sold_keyword)
+        if sold is None:
+            progress(f"[{index}/{len(targets)}] {key} の売り切れ価格を取得中…")
+            sold_query = SearchQuery(
+                keyword=sold_keyword, exclude=plan.exclude, conditions=conditions, sold=True, pages=1
+            )
+            sold = []
+            for source in list(sold_sources):
+                try:
+                    sold.extend(source.search(sold_query))
+                except FetchError as exc:
+                    errors.append(f"{source.label}（売り切れ {key}）: {exc}")
+                    sold_sources.remove(source)  # 同じエラーを繰り返さない
+            sold_cache[sold_keyword] = sold
         # 相場は、どのカードかタイトルから分かる売り切れだけで出す（推測は販売中の出品にだけ使う）
         same_card = [listing for listing in sold if profile.card_key(listing.title) == key]
         markets[key] = estimate_market(

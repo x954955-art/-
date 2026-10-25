@@ -6,6 +6,9 @@
            年代（旧裏〜MEGA）も推定し、カード番号のない旧裏はポケモンの名前でカードを見分ける。
 - onepiece: ワンピースカード向け。カード番号（OP01-120 など）とパラレル・スーパーパラレル（コミパラ）・
            SP・TR の違いでカードを見分け、鑑定と BOX のテープ有無で相場を分ける。転売目線が既定。
+- yugioh : 遊戯王向け。カード番号（QCCU-JP001 など）とレアリティの組み合わせでカードを見分ける。
+- game   : ゲーム機・ソフト向け。本体・ソフト・周辺機器を見分け、本体はモデル（有機EL・Lite・PS5 の
+           ディスク版/デジタル版 など）ごと、相場は新品未開封・中古・箱なし・ジャンクに分ける。
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import text
-from .eras import MODERN, Era, detect_era, detect_ygo_era
+from .eras import MODERN, Era, detect_era, detect_game_era, detect_ygo_era
 from .models import Listing
 from .pokemon_names import OLD_POKEMON
 
@@ -52,6 +55,8 @@ class Profile:
     guess_card_key: Callable[[str, list[str]], str | None] | None = None
     # スキャン用: カード（card_key）とその出品のタイトルから、売り切れを探すキーワードを決める
     sold_keyword: Callable[[str, list[str]], str] | None = None
+    # 転売時の送料を出品ごとに決める（ゲーム機の大きさなど）。なければ large_groups と large_shipping で決める
+    shipping_of: Callable[[Listing, int], int] | None = None
 
     def group(self, listing: Listing) -> str | None:
         return self.group_of(listing.title, listing.condition)
@@ -81,6 +86,8 @@ class Profile:
         )
 
     def resale_shipping(self, listing: Listing, base: int) -> int:
+        if self.shipping_of is not None:
+            return self.shipping_of(listing, base)
         if self.group(listing) in self.large_groups:
             return max(base, self.large_shipping)
         return base
@@ -696,7 +703,240 @@ YUGIOH = Profile(
 )
 
 
-PROFILES = {"default": DEFAULT, "pokeca": POKECA, "onepiece": ONEPIECE, "yugioh": YUGIOH}
+# ---------------------------------------------------------------- ゲーム機・ソフト
+
+# 本体の出品だと分かる言葉。ソフトのタイトルにも「Switch 2」などの機種名は入るので、機種名だけでは本体とみなさない
+_GAME_HW = _p(
+    r"本体|ゲーム機|モデル|(?<![a-z])(hac|heg|hdh)-001|(?<![a-z])cfi-\d{4}|(?<![a-z])cuh-\d{4}"
+    r"|(ジョイコン|joy-?con|ドック|コントローラー|付属品)\s*(付|つき|あり|有|完備|セット|一式)"
+    r"|steam\s*deck|スチーム\s*デック|rog\s*ally"  # パッケージのソフトがない機種は名前だけで本体とみなす
+)
+_GAME_SW = _p(r"ソフト|カセット|パッケージ|ケース\s*(なし|無し)|箱説")
+_GAME_ACC = _p(
+    r"カバー|ケース|フィルム|保護|ジョイコン|joy-?con|コントローラー|プロコン|ドック|アダプター|充電|ケーブル|スタンド"
+    r"|グリップ|ポーチ|バッグ|スキン|ステッカー|microsd|sdカード|ヘッドセット|イヤホン|キーボード|amiibo|アミーボ"
+    r"|ハンドル|ホイール"
+)
+_GAME_NEW = _p(r"新品(?!\s*同様)|未開封|未使用(?!\s*に近い)")
+_GAME_JUNK = _p(r"ジャンク|故障|動作不良|部品取り|起動しない|電源\s*(が)?\s*入らない|通電のみ")
+_GAME_LOOSE = {
+    "hw": _p(r"本体\s*(のみ|だけ)|箱\s*(なし|無し|欠品)|付属品\s*(なし|無し)"),
+    "sw": _p(r"(ソフト|カセット)\s*(のみ|だけ)|ケース\s*(なし|無し)|箱説?\s*(なし|無し)|(?<![ァ-ヺー])裸"),
+}
+GAME_GROUPS = {
+    "hw_new": "本体・新品未開封",
+    "hw_used": "本体・中古",
+    "hw_loose": "本体・箱や付属品なし",
+    "hw_junk": "本体・ジャンク",
+    "sw_new": "ソフト・新品未開封",
+    "sw_used": "ソフト・中古",
+    "sw_loose": "ソフト・箱やケースなし",
+    "sw_junk": "ソフト・ジャンク",
+    "other": "周辺機器など",
+}
+_GAME_KIND_LABELS = {"hw": "本体（ソフトではない）", "sw": "ソフト（本体ではない）", "acc": "周辺機器・アクセサリー"}
+
+# モデル。同じ機種でもモデル（有機EL・Lite・PS5 のディスク版/デジタル版 など）で値段が違うので、別の商品として相場を調べる
+_SWITCH_FAMILY = _p(r"switch|スイッチ|(?<![a-z])(hac|heg|hdh)-001")
+_SWITCH_MODELS = (
+    ("Switch 2", _p(r"(switch|スイッチ)\s*2(?![\d台個本])")),
+    ("Switch 有機EL", _p(r"有機\s*el|oled|(?<![a-z])heg-001")),
+    ("Switch Lite", _p(r"(?<![a-z])lite(?![a-z])|(?<![ァ-ヺー])ライト(?![ァ-ヺー])|(?<![a-z])hdh-001")),
+    ("Switch 新型", _p(r"新型|新モデル|バッテリー\s*(強化|持続|長持ち)|hac-001\s*\(?\s*-\s*01|(?<![a-z])xkj")),
+    ("Switch 旧型", _p(r"旧型|初期型|(?<![a-z])xaj|hac-001(?!\s*\(?\s*-\s*01)")),
+)
+_PS5_FAMILY = _p(r"ps\s*5(?!\d)|playstation\s*5|プレイステーション\s*5|プレステ\s*5|(?<![a-z])cfi-\d{4}")
+_PS4_FAMILY = _p(r"ps\s*4(?!\d)|playstation\s*4|プレイステーション\s*4|プレステ\s*4|(?<![a-z])cuh-\d{4}")
+_GAME_PRO = _p(r"(?<![a-z])pro(?![a-z])|(?<![ァ-ヺー])プロ(?![ァ-ヺー])|cfi-7\d{3}|cuh-7\d{3}")
+_PS_DIGITAL = _p(r"デジタル|digital|cfi-\d{4}\s*b")
+_PS_DISC = _p(r"ディスク|disc|ドライブ搭載|cfi-\d{4}\s*a")
+_PS5_SLIM = _p(r"cfi-2\d{3}|slim|スリム|新型|軽量|小型")
+_PS5_FIRST = _p(r"cfi-1[0-2]\d{2}|初期型|旧型")
+_PS4_SLIM = _p(r"cuh-2\d{3}|slim|スリム|薄型")
+_PS4_FIRST = _p(r"cuh-1\d{3}|初期型|旧型")
+_XBOX_X = _p(r"xbox\s*series\s*x")
+_XBOX_S = _p(r"xbox\s*series\s*s")
+_STEAM_DECK = _p(r"steam\s*deck|スチーム\s*デック")
+_STEAM_OLED = _p(r"oled|有機\s*el")
+_STEAM_LCD = _p(r"lcd|液晶")
+# 売り切れを探すキーワード（モデルの見分けは手元でするので、取りこぼしの少ない言葉にする）
+_GAME_SEARCH_WORDS = {
+    "Switch 2": "Nintendo Switch 2",
+    "Switch 有機EL": "Nintendo Switch 有機EL",
+    "Switch Lite": "Nintendo Switch Lite",
+    "Switch 新型": "Nintendo Switch 新型",
+    "Switch 旧型": "Nintendo Switch 旧型",
+    "PS5 Pro": "PS5 Pro",
+    "PS4 Pro": "PS4 Pro",
+    "Xbox Series X": "Xbox Series X",
+    "Xbox Series S": "Xbox Series S",
+}
+_BIG_CONSOLE = _p(
+    r"ps\s*[345](?!\d)|playstation\s*[345]|プレステ\s*[345]|プレイステーション\s*[345]|xbox\s*(series\s*x|one|360)"
+    r"|wii\s*u|ゲームキューブ"
+)
+GAME_CONSOLE_SHIPPING = 1000  # 宅急便 60〜80サイズ程度（Switch・携帯機・レトロ機）
+GAME_BIG_CONSOLE_SHIPPING = 1500  # 100〜140サイズ程度（PS5 などの据え置き機）
+
+
+def game_model_key(title: str) -> str | None:
+    """ゲーム機のモデル（例: Switch 有機EL, PS5 新型 ディスク）。分からなければ None。"""
+    normalized = text.normalize(title)
+    if _SWITCH_FAMILY.search(normalized):
+        return next((key for key, pattern in _SWITCH_MODELS if pattern.search(normalized)), None)
+    if _PS5_FAMILY.search(normalized):
+        if _GAME_PRO.search(normalized):
+            return "PS5 Pro"
+        generation = "新型" if _PS5_SLIM.search(normalized) else "初期型" if _PS5_FIRST.search(normalized) else None
+        edition = "デジタル" if _PS_DIGITAL.search(normalized) else "ディスク" if _PS_DISC.search(normalized) else None
+        return f"PS5 {generation} {edition}" if generation and edition else None
+    if _PS4_FAMILY.search(normalized):
+        if _GAME_PRO.search(normalized):
+            return "PS4 Pro"
+        return "PS4 薄型" if _PS4_SLIM.search(normalized) else "PS4 初期型" if _PS4_FIRST.search(normalized) else None
+    if _XBOX_X.search(normalized):
+        return "Xbox Series X"
+    if _XBOX_S.search(normalized):
+        return "Xbox Series S"
+    if _STEAM_DECK.search(normalized):
+        if _STEAM_OLED.search(normalized):
+            return "Steam Deck OLED"
+        return "Steam Deck LCD" if _STEAM_LCD.search(normalized) else None
+    return None
+
+
+def _game_kind(normalized: str) -> str:
+    """hw（本体）/ sw（ソフト）/ acc（周辺機器・アクセサリーだけ）。"""
+    if _GAME_HW.search(normalized):
+        return "hw"
+    if _GAME_SW.search(normalized):
+        return "sw"
+    if _GAME_ACC.search(normalized):
+        return "acc"
+    return "sw"  # 「マリオカート8 デラックス」のように、タイトルだけのものはソフト
+
+
+def game_group(title: str, condition: int | None) -> str:
+    normalized = text.normalize(title)
+    kind = _game_kind(normalized)
+    if kind == "acc":
+        return "other"
+    if _GAME_JUNK.search(normalized):
+        state = "junk"
+    elif condition == 1 or _GAME_NEW.search(normalized):
+        state = "new"
+    elif _GAME_LOOSE[kind].search(normalized):
+        state = "loose"
+    else:
+        state = "used"
+    return f"{kind}_{state}"
+
+
+def game_sold_keyword(key: str, titles: list[str]) -> str:
+    if key in _GAME_SEARCH_WORDS:
+        return _GAME_SEARCH_WORDS[key]
+    family = key.split()[0]
+    return {"PS5": "PS5 本体", "PS4": "PS4 本体", "Steam": "Steam Deck"}.get(family, key)
+
+
+def game_shipping(listing: Listing, base: int) -> int:
+    """売るときの送料。ソフトは base（ネコポスなど）、本体は大きさで決める。"""
+    normalized = text.normalize(listing.title)
+    if _game_kind(normalized) != "hw":
+        return base
+    return max(base, GAME_BIG_CONSOLE_SHIPPING if _BIG_CONSOLE.search(normalized) else GAME_CONSOLE_SHIPPING)
+
+
+def _game_unknown_model(title: str) -> str:
+    return "モデルが分からない"
+
+
+def _game_kind_mismatch(title: str, query_tokens: list[str]) -> str | None:
+    """本体を探しているのにソフトや周辺機器、ソフトを探しているのに本体、
+    モデルを指定しているのに別のモデル（またはモデルが分からないもの）、を外す。"""
+    query = " ".join(query_tokens)
+    normalized = text.normalize(title)
+    wanted_model = game_model_key(query)
+    if wanted_model or _GAME_HW.search(query):
+        wanted_kind = "hw"
+    elif _GAME_ACC.search(query) and not _GAME_SW.search(query):
+        wanted_kind = "acc"
+    else:
+        wanted_kind = "sw"
+    kind = _game_kind(normalized)
+    if kind != wanted_kind:
+        return _GAME_KIND_LABELS[kind]
+    if wanted_model is not None:
+        model = game_model_key(title)
+        if model is None:
+            return "モデルが分からない"
+        if model != wanted_model:
+            return "別のモデル"
+    return None
+
+
+GAME_RULES = (
+    _rule(
+        r"ダウンロード\s*(版|コード|番号)|(?<![a-z])dl\s*(版|コード|カード)|プロダクト\s*コード|コード\s*(のみ|だけ|通知)"
+        r"|シリアル\s*コード",
+        "ダウンロード版・コード",
+        "ダウンロード",
+    ),
+    _rule(
+        r"アカウント\s*(付|つき|販売|譲渡|売り)|(?<![a-z])ban(?![a-z])(?!\s*(なし|無し|歴なし|されていない|ではない|対策))",
+        "アカウント・BANの問題",
+        "アカウント",
+    ),
+    _rule(r"海外版|北米版|欧州版|輸入版|中国版|香港版|韓国版|アジア版|台湾版|(?<![a-z])(us|eu|uk)\s*版", "海外版", "海外"),
+    _rule(r"予約\s*(品|中|販売|受付)|発売前|抽選\s*(券|応募|権)", "予約品・抽選（手元にない商品）"),
+    _rule(
+        r"(?<!お)まとめ(?!\s*(買|割|可|歓迎|値引))|大量|\d+\s*本\s*セット|(ソフト|カセット)\s*\d+\s*本|セット売り",
+        "まとめ売り・セット",
+        "まとめ",
+    ),
+    _rule(r"(ソフト|カセット)\s*(付|つき|セット)|同梱(?!\s*(なし|無し|物|品))", "本体とソフトのセット", "セット"),
+    _rule(
+        r"(ドック|ジョイコン|joy-?con|コントローラー|プロコン|アダプター|ケーブル|充電器|スタンド|フィルム|ポーチ|カバー)\s*(のみ|だけ)",
+        "周辺機器のみ",
+        "周辺",
+    ),
+    _rule(r"本体\s*(なし|無し)", "本体なし"),
+    _rule(r"クラシック\s*ミニ|(?<![ァ-ヺー])ミニ(?![ァ-ヺー])", "ミニ（復刻版）", "ミニ"),
+    _rule(r"改造", "改造品", "改造"),
+)
+
+GAME = Profile(
+    name="game",
+    label="ゲーム機・ソフト",
+    group_of=game_group,
+    group_labels=GAME_GROUPS,
+    strict_groups=True,
+    exclusion_rules=GAME_RULES,
+    extra_exclusion=_game_kind_mismatch,
+    strong_risk_words=(
+        "液晶割れ", "画面割れ", "割れ", "ヒビ", "読み込み不良", "読み込まない", "読み込みエラー",
+        "バッテリー膨張", "膨張", "充電できない", "充電不良", "ボタン不良", "スティック不良", "通電のみ",
+    ),
+    mild_risk_words=(
+        "ドリフト", "勝手に動く", "ドット抜け", "焼け", "黄ばみ", "日焼け", "傷あり", "傷有", "キズあり",
+        "擦り傷", "スレ", "異音", "使用感", "汚れあり",
+    ),
+    defaults={
+        "resale": True,
+        "resale_shipping": 230,  # ソフト（ネコポス 210円 + 資材）。本体は大きさで 1,000〜1,500円
+        "min_profit": 1000,
+        # 「マリオカート ワールド」で「マリオカート8」が混ざらないよう、キーワードの4分の3以上がタイトルにあるものだけ
+        "min_match": 0.75,
+    },
+    card_key=game_model_key,
+    era_of=detect_game_era,
+    unknown_card_reason=_game_unknown_model,
+    sold_keyword=game_sold_keyword,
+    shipping_of=game_shipping,
+)
+
+
+PROFILES = {"default": DEFAULT, "pokeca": POKECA, "onepiece": ONEPIECE, "yugioh": YUGIOH, "game": GAME}
 ALIASES = {
     "一般": "default",
     "pokemon": "pokeca",
@@ -710,6 +950,9 @@ ALIASES = {
     "遊戯王カード": "yugioh",
     "遊戯王ocg": "yugioh",
     "ygo": "yugioh",
+    "games": "game",
+    "ゲーム": "game",
+    "ゲーム機": "game",
 }
 
 
