@@ -200,4 +200,4 @@ def test_get_profile_accepts_aliases():
     assert get_profile("Pokeca") is POKECA
     assert get_profile("default") is DEFAULT
     with pytest.raises(ValueError):
-        get_profile("yugioh")
+        get_profile("mtg")

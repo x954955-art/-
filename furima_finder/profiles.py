@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import text
-from .eras import MODERN, Era, detect_era
+from .eras import MODERN, Era, detect_era, detect_ygo_era
 from .models import Listing
 from .pokemon_names import OLD_POKEMON
 
@@ -273,11 +273,8 @@ def _grade(normalized: str) -> str:
     return "raw"
 
 
-def pokeca_group(title: str, condition: int | None) -> str:
-    normalized = text.normalize(title)
-    if _looks_like_card(normalized, title):
-        grade = _grade(normalized)
-        return f"{grade}_1ed" if _first_edition(normalized) else grade
+def _shrink_box_group(normalized: str) -> str:
+    """BOX ならシュリンクの有無で分け、BOX でなければ「カード以外」。"""
     if _BOX.search(normalized):
         if _SHRINK_NO.search(normalized):
             return "box_noshrink"
@@ -285,6 +282,14 @@ def pokeca_group(title: str, condition: int | None) -> str:
             return "box_shrink"
         return "box"
     return "other"
+
+
+def pokeca_group(title: str, condition: int | None) -> str:
+    normalized = text.normalize(title)
+    if _looks_like_card(normalized, title):
+        grade = _grade(normalized)
+        return f"{grade}_1ed" if _first_edition(normalized) else grade
+    return _shrink_box_group(normalized)
 
 
 def pokeca_card_key(title: str) -> str | None:
@@ -537,7 +542,161 @@ ONEPIECE = Profile(
 )
 
 
-PROFILES = {"default": DEFAULT, "pokeca": POKECA, "onepiece": ONEPIECE}
+# ---------------------------------------------------------------- 遊戯王
+
+# カード番号: QCCU-JP001・RC04-JP010・20CP-JPS01 のような「弾の記号-JP番号」（日本語版）
+_YGO_NUMBER = _p(r"(?<![a-z0-9])([a-z0-9]{2,5})\s*[-‐−–ー]\s*jp\s*([a-z]?\d{3}|[a-z]\d{2})(?![0-9])")
+# {K} はカタカナと中黒（「スーパー・ヴィークロイド」のようなカード名の一部をレアリティと読まないため）
+_K = "[ァ-ヺー・]"
+# レアリティ。同じカード番号でもレアリティで値段が大きく違うので、別のカードとして相場を調べる。
+# 上から順に判定し、見つかった部分は消してから次を調べる（「プリシク」を「シク」と読まないため）
+_YGO_RARITIES = {
+    label: _p(pattern.replace("{K}", _K))
+    for label, pattern in (
+        (
+            "QCSE",
+            r"(?<![a-z0-9])qcse(?![a-z0-9])|qc\s*(シク|シークレット|se)|ク[ォオ]ー?ター\s*センチュリー(\s*シークレット)?(\s*レア)?"
+            r"|ク[ォオ]シク|25th\s*(シク|シークレット|se)(\s*レア)?",
+        ),
+        ("20thSE", r"20th\s*(シク|シークレット|se|ser)(\s*レア)?|(?<!\d)20\s*シク"),
+        ("PSE", r"(?<![a-z0-9])psec?(?![a-z0-9])|プリシク|プリズマティック(\s*シークレット)?(\s*レア)?|プリズマ\s*(シク|シークレット)"),
+        ("ESE", r"エクシク|エクストラ\s*シ(ク|ークレット)(\s*レア)?|(?<![a-z0-9])ese(?![a-z0-9])"),
+        ("GSE", r"ゴルシク|ゴールド\s*シ(ク|ークレット)(\s*レア)?|(?<![a-z0-9])gse(?![a-z0-9])"),
+        ("UPR", r"ウルパラ|ウルトラ\s*パラ(レル)?(\s*レア)?|(?<![a-z0-9])upr(?![a-z0-9])"),
+        ("UL", r"レリーフ|アルティメット\s*レア|(?<!{K})アルティメット(?!{K})|(?<![a-z0-9])ul(?![a-z0-9])"),
+        ("HR", r"ホログラフィック(\s*レア)?|(?<!{K})ホロ(?!{K})|(?<![a-z0-9])hr(?![a-z0-9])"),
+        ("CR", r"コレクターズ(\s*レア)?|コレレア|(?<![a-z0-9])cr(?![a-z0-9])"),
+        ("GR", r"ゴールド\s*レア|(?<![a-z0-9])gr(?![a-z0-9])"),
+        ("KC", r"kc\s*(ウルトラ|レア)(\s*レア)?|(?<![a-z0-9])kc(?![a-z0-9])"),
+        ("M", r"ミレニアム\s*レア"),
+        ("SE", r"シークレット(\s*レア)?|(?<!{K})シク(?!{K})|(?<![a-z0-9])(se|ser|scr)(?![a-z0-9])"),
+        ("UR", r"ウルトラ\s*レア|(?<!{K})ウルトラ(?!{K})|(?<![a-z0-9])ur(?![a-z0-9])"),
+        ("SR", r"スーパー\s*レア|(?<!{K})スーパー(?!{K})|(?<![a-z0-9])sr(?![a-z0-9])"),
+        ("NP", r"ノーパラ|ノーマル\s*パラ(レル)?(\s*レア)?|(?<!{K})パラ(レル)?(?!{K})|(?<![a-z0-9])np(?![a-z0-9])"),
+        ("R", r"(?<!{K})レア(?!{K})"),
+        ("N", r"(?<!{K})ノーマル(?!{K})"),
+    )
+}
+_YGO_GENERIC_RARITIES = frozenset({"R", "N"})  # ほかのレアリティと一緒に書かれていれば無視する
+_YGO_FOREIGN_NUMBER = r"(?<![a-z0-9])[a-z0-9]{2,5}\s*-\s*(en|ae|kr|de|fr|it|pt|sp)\d{3}(?![0-9])"
+
+YUGIOH_GROUPS = {
+    "raw": "未鑑定",
+    "psa10": "PSA10",
+    "psa9": "PSA9",
+    "graded": "鑑定品（その他）",
+    "box_shrink": "BOX（シュリンク付き）",
+    "box_noshrink": "BOX（シュリンクなし）",
+    "box": "BOX（シュリンク不明）",
+    "other": "カード以外",
+}
+
+
+def _ygo_number(normalized: str) -> str | None:
+    match = _YGO_NUMBER.search(normalized)
+    return f"{match.group(1).upper()}-JP{match.group(2).upper()}" if match else None
+
+
+def _ygo_rarity_labels(normalized: str) -> list[str]:
+    """書かれているレアリティ（優先順）。"""
+    labels = []
+    for label, pattern in _YGO_RARITIES.items():
+        if pattern.search(normalized):
+            labels.append(label)
+            normalized = pattern.sub(" ", normalized)
+    return labels
+
+
+def _ygo_rarity(normalized: str) -> str | None:
+    """出品のレアリティ。違うレアリティが2つ以上書かれていれば（まとめ売りなど）None。"""
+    labels = _ygo_rarity_labels(normalized)
+    specific = [label for label in labels if label not in _YGO_GENERIC_RARITIES]
+    if len(specific) > 1:
+        return None
+    return specific[0] if specific else (labels[0] if labels else None)
+
+
+def yugioh_card_key(title: str) -> str | None:
+    """どのカードか: カード番号（例: QCCU-JP001）とレアリティ（例: QCSE）。どちらかが分からなければ None。"""
+    normalized = text.normalize(title)
+    number, rarity = _ygo_number(normalized), _ygo_rarity(normalized)
+    return f"{number} {rarity}" if number and rarity else None
+
+
+def yugioh_sold_keyword(key: str, titles: list[str]) -> str:
+    """売り切れを探すキーワード。レアリティは出品でいちばん多い書き方にする（「プリシク」と「PSE」など）。"""
+    number, _, rarity = key.partition(" ")
+    pattern = _YGO_RARITIES[rarity]
+    words = Counter(match.group() for title in titles if (match := pattern.search(text.normalize(title))))
+    if not words:
+        return key
+    word = words.most_common(1)[0][0]
+    return f"{number} {word.upper() if word.isascii() else word}"
+
+
+def _ygo_looks_like_card(normalized: str) -> bool:
+    specific = set(_ygo_rarity_labels(normalized)) - _YGO_GENERIC_RARITIES
+    return bool(_YGO_NUMBER.search(normalized) or specific or _GRADED.search(normalized))
+
+
+def yugioh_group(title: str, condition: int | None) -> str:
+    normalized = text.normalize(title)
+    return _grade(normalized) if _ygo_looks_like_card(normalized) else _shrink_box_group(normalized)
+
+
+def _ygo_unknown_card(title: str) -> str:
+    return "レアリティが分からない" if _YGO_NUMBER.search(text.normalize(title)) else "カード番号なし"
+
+
+def _ygo_kind_mismatch(title: str, query_tokens: list[str]) -> str | None:
+    """カードを探しているのにBOXやサプライ品、BOXを探しているのに単品カード、
+    カード番号やレアリティを指定しているのに別のカード・別のレアリティ、を外す。"""
+    query = " ".join(query_tokens)
+    normalized = text.normalize(title)
+    if _looks_like_box(query):
+        return "単品カード" if _ygo_looks_like_card(normalized) else None
+    if _ygo_looks_like_card(query) and not _ygo_looks_like_card(normalized):
+        return "BOX・パック" if _looks_like_box(normalized) else "カード以外・カードを特定できない"
+    wanted_number = _ygo_number(query)
+    if wanted_number is not None:
+        number = _ygo_number(normalized)
+        if number is not None and number != wanted_number:
+            return "別のカード"
+    # キーワードを複数まとめて探すときは、どれかのレアリティに当てはまれば残す
+    wanted = set(_ygo_rarity_labels(query)) - _YGO_GENERIC_RARITIES
+    rarity = _ygo_rarity(normalized)
+    if wanted and rarity is not None and rarity not in _YGO_GENERIC_RARITIES and rarity not in wanted:
+        return "別のレアリティ"
+    return None
+
+
+YUGIOH_RULES = POKECA_RULES + (
+    _rule(r"アジア版|旧アジア|(?<![a-z])asia(?![a-z])", "海外版", "アジア"),
+    _rule(_YGO_FOREIGN_NUMBER, "海外版"),
+    _rule(r"ラッシュ\s*・?\s*デュエル|(?<![a-z])rd\s*/", "ラッシュデュエル（別のゲーム）", "ラッシュ"),
+)
+
+YUGIOH = Profile(
+    name="yugioh",
+    label="遊戯王",
+    group_of=yugioh_group,
+    group_labels=YUGIOH_GROUPS,
+    strict_groups=True,
+    exclusion_rules=YUGIOH_RULES,
+    extra_exclusion=_ygo_kind_mismatch,
+    strong_risk_words=POKECA.strong_risk_words,
+    mild_risk_words=POKECA.mild_risk_words,
+    defaults=dict(POKECA.defaults),
+    card_key=yugioh_card_key,
+    large_groups=BOX_GROUPS,
+    large_shipping=520,
+    era_of=detect_ygo_era,
+    unknown_card_reason=_ygo_unknown_card,
+    sold_keyword=yugioh_sold_keyword,
+)
+
+
+PROFILES = {"default": DEFAULT, "pokeca": POKECA, "onepiece": ONEPIECE, "yugioh": YUGIOH}
 ALIASES = {
     "一般": "default",
     "pokemon": "pokeca",
@@ -547,6 +706,10 @@ ALIASES = {
     "ワンピース": "onepiece",
     "ワンピースカード": "onepiece",
     "ワンピカ": "onepiece",
+    "遊戯王": "yugioh",
+    "遊戯王カード": "yugioh",
+    "遊戯王ocg": "yugioh",
+    "ygo": "yugioh",
 }
 
 

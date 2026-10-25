@@ -193,7 +193,7 @@ def test_config_errors(tmp_path, content, message):
 
 
 @pytest.mark.parametrize(
-    "name", ["watchlist.example.toml", "watchlist.pokeca.example.toml", "pokeca.toml", "onepiece.toml"]
+    "name", ["watchlist.example.toml", "watchlist.pokeca.example.toml", "pokeca.toml", "onepiece.toml", "yugioh.toml"]
 )
 def test_example_configs_are_valid(name):
     from pathlib import Path
@@ -343,8 +343,8 @@ def test_scan_requires_a_card_profile(capsys):
 
 def test_unknown_profile_is_rejected(capsys):
     with pytest.raises(SystemExit):
-        cli.main(["x", "--profile", "yugioh"], sources=fake_sources())
-    assert "default / pokeca / onepiece のどれかで指定してください" in capsys.readouterr().err
+        cli.main(["x", "--profile", "mtg"], sources=fake_sources())
+    assert "default / pokeca / onepiece / yugioh のどれかで指定してください" in capsys.readouterr().err
 
 
 def test_scan_end_to_end_output(tmp_path):
@@ -445,7 +445,11 @@ def test_config_with_bom_and_wrong_encoding(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "name", ["pokeca_search.bat", "pokeca_watch.bat", "onepiece_search.bat", "onepiece_watch.bat", "check_sites.bat"]
+    "name",
+    [
+        "pokeca_search.bat", "pokeca_watch.bat", "onepiece_search.bat", "onepiece_watch.bat",
+        "yugioh_search.bat", "yugioh_watch.bat", "check_sites.bat",
+    ],
 )
 def test_windows_batch_files(name):
     from pathlib import Path

@@ -1,7 +1,8 @@
-"""ポケモンカードの年代（シリーズ）の判定。
+"""カードの年代（シリーズ）の判定。
 
-タイトルにあるシリーズ名・弾の記号（sv2a・s12a・sm11b など）・プロモ番号（001/SV-P など）・
+ポケモンカード: タイトルにあるシリーズ名・弾の記号（sv2a・s12a・sm11b など）・プロモ番号（001/SV-P など）・
 その年代にしかないレアリティや種類（SAR・CSR・GX・VMAX など）から、おおよその年代を推定する。
+遊戯王: タイトルに書かれた「初期」「2期」…「12期」から年代を決める。
 古い年代のカードは再販されず、きれいな状態のものが減っていくため値上がりしやすい傾向がある。
 """
 
@@ -109,3 +110,38 @@ def detect_era(titles: Iterable[str]) -> Era | None:
     if not ranked or (len(ranked) == 2 and ranked[0][1] == ranked[1][1]):
         return None
     return ERAS[ranked[0][0]]
+
+
+# ---------------------------------------------------------------- 遊戯王
+
+# 遊戯王は発売時期を「初期（1期）」「2期」…「12期」と呼ぶ。「初期傷」は時期ではない
+_YGO_PERIOD = _p(r"(?<!\d)(1[0-2]|[1-9])\s*期|初期(?!\s*(傷|キズ|不良))")
+YGO_ERAS = {
+    period: Era(f"ygo{period}", label, years, points)
+    for period, label, years, points in (
+        ("1", "初期", "1999〜2000年ごろ", 4),
+        ("2", "2期", "2000〜2002年ごろ", 4),
+        ("3", "3期", "2002〜2004年ごろ", 4),
+        ("4", "4期", "2004〜2006年ごろ", 4),
+        ("5", "5期", "2006〜2008年ごろ", 4),
+        ("6", "6期", "2008〜2010年ごろ", 4),
+        ("7", "7期", "2010〜2012年ごろ", 3),
+        ("8", "8期", "2012〜2014年ごろ", 3),
+        ("9", "9期", "2014〜2017年ごろ", 2),
+        ("10", "10期", "2017〜2020年ごろ", 2),
+        ("11", "11期", "2020〜2023年ごろ", 1),
+        ("12", "12期", "2023年〜", 0),
+    )
+}
+
+
+def detect_ygo_era(titles: Iterable[str]) -> Era | None:
+    """遊戯王のタイトル（同じカードなら複数まとめて）に書かれた「初期」「N期」の多数決。なければ None。"""
+    votes: Counter[str] = Counter()
+    for title in titles:
+        for match in _YGO_PERIOD.finditer(text.normalize(title)):
+            votes[match.group(1) or "1"] += 1
+    ranked = votes.most_common(2)
+    if not ranked or (len(ranked) == 2 and ranked[0][1] == ranked[1][1]):
+        return None
+    return YGO_ERAS[ranked[0][0]]
