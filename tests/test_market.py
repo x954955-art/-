@@ -127,6 +127,49 @@ def test_on_sale_basis_has_no_sales_activity(now):
     assert market.overall.sales_30d is None
 
 
+def test_long_term_trend_compares_recent_sales_with_3_to_12_months_ago(now):
+    from datetime import timedelta
+
+    def sold(price, days):
+        return make_listing("Switch 有機EL", price, sold=True, updated_at=now - timedelta(days=days))
+
+    listings = [sold(12000, days) for days in (3, 10, 20, 25)]
+    listings += [sold(11000, days) for days in (40, 60)]  # 1〜3か月前は比べない
+    listings += [sold(8000, days) for days in (100, 150, 200, 300)]
+    listings.append(sold(5000, 400))  # 1年より前も使わない
+    stats = estimate(listings, now=now).overall
+    assert stats.past_median == 8000
+    assert stats.long_trend == pytest.approx(0.5)  # 直近30日 12,000円 ÷ 3か月〜1年前 8,000円
+    assert (stats.month_median, stats.median) == (12000, 11000)
+
+    # 直近30日に3件なければ60日まで広げる
+    sparse = [sold(12000, 20), sold(13000, 45), sold(12500, 55)] + [sold(10000, days) for days in (120, 200, 250)]
+    sparse_stats = estimate(sparse, now=now).overall
+    assert sparse_stats.long_trend == pytest.approx(0.25)
+    assert sparse_stats.month_median is None  # 売値の目安に使う「直近30日」は3件以上のときだけ
+    # 昔の売り切れがなければ出さない
+    recent_only = estimate([sold(10000, days) for days in (1, 2, 3, 4, 5)], now=now).overall
+    assert (recent_only.long_trend, recent_only.past_median) == (None, None)
+
+
+def test_typical_condition_of_sold_listings():
+    sold = [make_listing("Switch 有機EL", 30000, sold=True, condition=c) for c in (2, 3, 4, 5)]
+    assert estimate(sold).overall.condition == 3  # 真ん中の2つ（3と4）のうち良いほう
+    unknown = [make_listing("Switch 有機EL", 30000, sold=True, condition=None) for _ in range(4)]
+    assert estimate(unknown).overall.condition is None
+
+
+def test_market_era_comes_from_sold_titles(now):
+    from furima_finder.profiles import POKECA
+
+    sold = [make_listing(f"旧裏 リザードン 美品{i}", 10000, sold=True) for i in range(4)]
+    market = estimate_market(
+        sold, text.tokens("旧裏 リザードン"), min_match=0.5, buyer_shipping=300, profile=POKECA, now=now
+    )
+    assert market.era.key == "kyuura"
+    assert estimate([make_listing("Switch 有機EL", 30000, sold=True) for _ in range(3)]).era is None
+
+
 def test_strict_profile_keeps_grades_apart(now):
     from furima_finder.profiles import POKECA
 

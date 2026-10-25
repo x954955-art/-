@@ -1,8 +1,8 @@
 """キーワードごとに「相場を調べる → 販売中を集める → 採点する」までを行う。
 
 - run_search: 1つの商品（キーワード）について、売り切れから相場を出して販売中を採点する
-- run_scan  : 広いキーワード（例「ポケモンカード SAR」）で販売中を集め、カード番号ごとに
-              売り切れを調べて、カードをまたいで転売候補を探す
+- run_scan  : 広いキーワード（例「ポケモンカード SAR」）で販売中を集め、カード番号（旧裏は
+              カード名）ごとに売り切れを調べて、カードをまたいで転売候補を探す
 """
 
 from __future__ import annotations
@@ -233,7 +233,9 @@ def run_search(
 
 
 def card_query(key: str, listings: list[Listing], profile: Profile) -> str:
-    """カードの売り切れを探すキーワード（カード番号＋よく書かれているレアリティ）。"""
+    """カードの売り切れを探すキーワード（カード番号＋よく書かれているレアリティ。旧裏はカード名のまま）。"""
+    if "/" not in key:
+        return key
     rarity = most_common_rarity(profile, (listing.title for listing in listings))
     return f"{key} {rarity}" if rarity else key
 
@@ -274,7 +276,7 @@ def run_scan(
         reason = "売り切れ・取引中" if listing.sold else profile.exclusion_reason(listing.title, query_tokens)
         key = None if reason else profile.card_key(listing.title)
         if reason or key is None:
-            skipped[reason or "カード番号なし"] += 1
+            skipped[reason or profile.missing_card_reason(listing.title)] += 1
             continue
         cards.setdefault(key, []).append(listing)
 

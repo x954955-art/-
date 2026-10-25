@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from . import text
+from .eras import Era
 from .models import Listing
 from .profiles import DEFAULT, Profile
 
@@ -20,6 +21,12 @@ RECENT_MIN_SAMPLES = 5
 TREND_DAYS = 7  # 直近7日とそれ以前（30日まで）を比べて相場の動きを見る
 TREND_MIN_SAMPLES = 3
 SALES_WINDOW_DAYS = 30
+# 長い目で見た値動き: 最近（直近30日、少なければ60日まで）を3か月〜1年前と比べる
+LONG_RECENT_DAYS = 30
+LONG_RECENT_MAX_DAYS = 60
+LONG_PAST_FROM_DAYS = 90
+LONG_PAST_TO_DAYS = 365
+LONG_MIN_SAMPLES = 3
 
 
 def percentile(sorted_values: list[float], q: float) -> float:
@@ -44,8 +51,12 @@ class PriceStats:
     low: int
     high: int
     recent_median: int | None = None  # 直近14日に売れた価格の中央値（5件以上あるとき）
+    month_median: int | None = None  # 直近30日に売れた価格の中央値（3件以上あるとき）
     sales_30d: int | None = None  # 直近30日に売れた件数（売れた日時が分かるときだけ）
     trend: float | None = None  # 直近7日の中央値が、それより前（30日まで）より何割高いか
+    long_trend: float | None = None  # 最近の中央値が、3か月〜1年前の中央値より何割高いか
+    past_median: int | None = None  # 3か月〜1年前に売れた価格の中央値
+    condition: int | None = None  # 売れた出品のよくある状態（状態の中央値）
 
     @classmethod
     def of(cls, prices: Iterable[int]) -> PriceStats:
@@ -78,6 +89,20 @@ class PriceStats:
         ]
         if len(last_week) >= TREND_MIN_SAMPLES and len(before) >= TREND_MIN_SAMPLES:
             stats.trend = _median(last_week) / _median(before) - 1
+        # 売れるペースがゆっくりなカード（古いカードに多い）ほど、昔の売り切れまで取れて分かる
+        recent = [price for price, age in dated if age <= timedelta(days=LONG_RECENT_DAYS)]
+        if len(recent) >= LONG_MIN_SAMPLES:
+            stats.month_median = round(_median(recent))
+        else:
+            recent = [price for price, age in dated if age <= timedelta(days=LONG_RECENT_MAX_DAYS)]
+        past = [
+            price
+            for price, age in dated
+            if timedelta(days=LONG_PAST_FROM_DAYS) < age <= timedelta(days=LONG_PAST_TO_DAYS)
+        ]
+        if len(recent) >= LONG_MIN_SAMPLES and len(past) >= LONG_MIN_SAMPLES:
+            stats.past_median = round(_median(past))
+            stats.long_trend = _median(recent) / _median(past) - 1
         return stats
 
     @property
@@ -100,6 +125,7 @@ class MarketStats:
     excluded_outliers: int = 0
     oldest: datetime | None = None
     newest: datetime | None = None
+    era: Era | None = None  # 売り切れのタイトルから推定したカードの年代（ポケカのみ）
 
     @classmethod
     def manual(cls, price: int) -> MarketStats:
@@ -218,8 +244,15 @@ def estimate_market(
 
     def summarize(items: list[tuple[Listing, int]]) -> PriceStats:
         if basis != "sold":  # 販売中の出品の日時は「売れた日時」ではない
-            return PriceStats.of(price for _, price in items)
-        return PriceStats.from_sales([(price, listing.updated_at or listing.created_at) for listing, price in items], now)
+            summary = PriceStats.of(price for _, price in items)
+        else:
+            summary = PriceStats.from_sales(
+                [(price, listing.updated_at or listing.created_at) for listing, price in items], now
+            )
+        conditions = sorted(listing.condition for listing, _ in items if listing.condition)
+        if len(conditions) >= MIN_SAMPLES:
+            summary.condition = conditions[(len(conditions) - 1) // 2]  # 2つの真ん中なら良いほう（控えめ）
+        return summary
 
     stats.overall = summarize(kept)
     min_group = MIN_SAMPLES if profile.strict_groups else MIN_GROUP_SAMPLES
@@ -232,4 +265,6 @@ def estimate_market(
     times = [moment for moment in times if moment is not None]
     if times:
         stats.oldest, stats.newest = min(times), max(times)
+    if profile.era_of is not None:
+        stats.era = profile.era_of(listing.title for listing, _ in kept)
     return stats

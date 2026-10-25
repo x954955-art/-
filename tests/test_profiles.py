@@ -6,6 +6,7 @@ from furima_finder.profiles import (
     POKECA,
     get_profile,
     most_common_rarity,
+    old_card_name,
     pokeca_card_key,
     pokeca_group,
     pokeca_rarity,
@@ -32,6 +33,13 @@ BOX_QUERY = text.tokens("151 BOX シュリンク付き")
         ("テラスタルフェスex 1BOX", "box"),
         ("ナンジャモ 096/071 SAR BOX開封品", "raw"),
         ("ポケモンカード スターターセット", "other"),
+        # 旧裏の初版（マークなし）や 1ED は別の相場
+        ("旧裏 リザードン 初版", "raw_1ed"),
+        ("旧裏 リザードン マークなし PSA9", "psa9_1ed"),
+        ("旧裏 リザードン 初版ではありません", "raw"),
+        ("ポケモンカードe リザードン 1ED 006/128", "raw_1ed"),
+        ("リザードンex SAR 201/165 初版", "raw"),  # SV以降の「初版」は区別しない
+        ("旧裏 拡張パック 未開封", "other"),
     ],
 )
 def test_pokeca_groups(title, group):
@@ -47,10 +55,42 @@ def test_pokeca_groups(title, group):
         ("ピカチュウ ２０１／１６５", "201/165"),
         ("10/24発売 リザードン SAR", None),
         ("リザードンex SAR", None),
+        # 旧裏はカード番号がないので名前で見分ける
+        ("旧裏 リザードン 初版 マークなし", "旧裏 リザードン"),
+        ("【旧裏】わるいリザードン", "旧裏 わるいリザードン"),
+        ("旧裏面 リザードン 第1弾 拡張パック", "旧裏 リザードン"),  # 「拡張パック第1弾」は弾の名前
+        ("旧裏 ピカチュウ プロモ", "旧裏 ピカチュウ プロモ"),
+        ("リザードン 初版", None),  # 「旧裏」と書かれていなければ名前では見分けない
+        ("旧裏 拡張パック 未開封", None),
+        ("旧裏 リザードン スリーブ", None),
     ],
 )
 def test_card_key(title, key):
     assert pokeca_card_key(title) == key
+
+
+@pytest.mark.parametrize(
+    "title, name",
+    [
+        ("ポケモンカード 旧裏 リザードン LV.76 初版", "リザードン"),
+        ("旧裏 わるいリザードン", "わるいリザードン"),
+        ("旧裏 ひかるギャラドス neo", "ひかるギャラドス"),
+        ("旧裏 カスミのトサキント", "カスミのトサキント"),
+        ("旧裏 ロケット団のニャース", "ロケット団のニャース"),
+        ("旧裏のミュウツー", "ミュウツー"),
+        ("ポケモンカードリザードン 旧裏", "リザードン"),
+        ("旧裏 キラ リザードンホロ", "リザードン"),
+        ("旧裏 サンダース", "サンダース"),  # 「サンダー」ではない
+        ("旧裏 レアコイル", "レアコイル"),  # 「コイル」ではない
+        ("旧裏 ファンクラブ ピカチュウ", "ピカチュウ"),  # 「ファンクラブ」の「クラブ」はポケモンではない
+        ("旧裏 リザードン カメックス", None),  # 2種類以上はまとめ売りの可能性
+        ("旧裏 ブースターパック", None),
+        ("旧裏 オーキド博士", None),
+        ("旧裏 ナナミのピカチュウ", None),  # 知らない「〇〇の」は別のカードかもしれない
+    ],
+)
+def test_old_card_name(title, name):
+    assert old_card_name(title) == name
 
 
 def test_rarity():
@@ -82,6 +122,12 @@ def test_rarity():
         ("リザードンex SAR 201/165", BOX_QUERY, "単品カード"),
         ("151 BOX 2箱", BOX_QUERY, "まとめ売り・セット"),
         ("ナンジャモ", text.tokens("ナンジャモ"), None),
+        # カード番号（旧裏はカード名）を指定したら、別のカードは外す
+        ("リザードンex SAR 349/190", text.tokens("リザードンex SAR 201/165"), "別のカード"),
+        ("PSA10 リザードンex SAR 201/165", text.tokens("リザードンex SAR 201/165"), None),
+        ("旧裏 わるいリザードン 初版", text.tokens("旧裏 リザードン 初版"), "別のカード"),
+        ("リザードン 初版 マークなし", text.tokens("旧裏 リザードン 初版"), None),
+        ("リザードン 旧裏 スリーブ", text.tokens("旧裏 リザードン"), "カード以外・カードを特定できない"),
     ],
 )
 def test_pokeca_exclusions(title, query, reason):
@@ -107,6 +153,12 @@ def test_box_items_use_larger_shipping():
     assert POKECA.resale_shipping(make_listing("リザードン SAR 201/165"), 230) == 230
     assert POKECA.resale_shipping(make_listing("リザードン SAR 201/165"), 600) == 600
     assert DEFAULT.resale_shipping(make_listing("151 BOX"), 750) == 750
+
+
+def test_missing_card_reason():
+    assert POKECA.missing_card_reason("旧裏 オーキド博士") == "カード名を特定できない"
+    assert POKECA.missing_card_reason("リザードン SAR 美品") == "カード番号なし"
+    assert DEFAULT.missing_card_reason("Switch") == "カード番号なし"
 
 
 def test_get_profile_accepts_aliases():

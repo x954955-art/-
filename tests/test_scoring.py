@@ -117,16 +117,18 @@ def test_format_age():
 
 # ---------------------------------------------------------------- 転売目線
 
+from furima_finder.eras import ERAS  # noqa: E402
 from furima_finder.market import PriceStats  # noqa: E402
 from furima_finder.profiles import POKECA  # noqa: E402
 
 CARD_TOKENS = text.tokens("リザードンex SAR")
+OLD_TOKENS = text.tokens("旧裏 リザードン")
 RESALE = Settings(resale=True, resale_shipping=230, min_profit=1000, buyer_shipping=300, min_match=0.5)
 
 
-def card_market(group="raw", median=10000, recent=10000, sales=25, trend=0.0, q1=9500, q3=10500):
-    stats = PriceStats(20, median, q1, q3, q1, q3, recent_median=recent, sales_30d=sales, trend=trend)
-    return MarketStats(overall=stats, groups={group: stats}, labels=dict(POKECA.group_labels), strict=True)
+def card_market(group="raw", median=10000, recent=10000, sales=25, trend=0.0, q1=9500, q3=10500, era=None, **extra):
+    stats = PriceStats(20, median, q1, q3, q1, q3, recent_median=recent, sales_30d=sales, trend=trend, **extra)
+    return MarketStats(overall=stats, groups={group: stats}, labels=dict(POKECA.group_labels), strict=True, era=era)
 
 
 def resale_ev(listing, now, market=None, settings=RESALE, tokens=CARD_TOKENS):
@@ -141,8 +143,10 @@ def test_resale_profit_roi_and_score(now):
     assert result.roi == pytest.approx(2770 / 6000)
     assert result.reasons[0] == "売値の目安 ¥10,000（未鑑定の相場・直近14日の中央値）、手数料10%と送料¥230を差し引き"
     assert "直近30日で25件売れている" in result.reasons
-    # 利益 23 + 利益率 15 + 売れ行き 12 + 相場の動き 7 + 状態 9 + 出品者（不明）5
-    assert result.score == 71
+    # 利益 20 + 利益率 15 + 売れ行き 12 + 値動き 5（直近7日 3・長期は不明で 2・年代 SV以降で 0）
+    # + 状態 9 + 出品者（不明）5
+    assert result.score == 66
+    assert result.era.key == "sv_mega"  # SAR は SV と MEGA のどちらにもある
 
 
 @pytest.mark.parametrize(
@@ -169,7 +173,14 @@ def test_falling_and_rising_markets(now):
     rising = resale_ev(listing, now, card_market(trend=0.12))
     assert "相場が下がっている（直近7日 −20%）" in falling.warnings
     assert "相場が上がっている（直近7日 +12%）" in rising.reasons
-    assert rising.score - falling.score == 10
+    assert rising.score - falling.score == 5
+
+
+def test_slow_selling_cards_use_the_last_30_days(now):
+    market = card_market(median=8500, recent=None, month_median=10000, q1=8000, q3=10000)
+    result = resale_ev(make_listing("旧裏 リザードン", 6000), now, market, tokens=OLD_TOKENS)
+    assert result.expected_sale == 10000
+    assert "直近30日の中央値" in result.reasons[0]
 
 
 def test_wide_spread_uses_conservative_sale_price(now):
@@ -252,3 +263,52 @@ def test_damaged_cards_are_valued_lower_for_resale(now):
     assert "×70%・やや傷や汚れありのため" in result.reasons[0]
     assert result.excluded == "利益が少ない"
     assert "説明文に「折れ」" in result.warnings and "説明文に「水濡れ」" in result.warnings
+
+
+# ---------------------------------------------------------------- 古いカード・長期の値動き
+
+
+def test_old_cards_and_long_term_rises_add_points(now):
+    modern = resale_ev(make_listing("リザードンex SAR 201/165", 6000), now)
+    old = resale_ev(make_listing("旧裏 リザードン", 6000), now, tokens=OLD_TOKENS)
+    assert old.era is ERAS["kyuura"]
+    assert old.score - modern.score == 4  # 年代 4点（SV以降は0点）
+    assert "古い年代のカード（旧裏・1996〜2001年）：再販がなく値上がりしやすい" in old.reasons
+
+    rising = resale_ev(
+        make_listing("旧裏 リザードン", 6000), now, card_market(long_trend=0.35, past_median=7400), tokens=OLD_TOKENS
+    )
+    assert rising.score - old.score == 4  # 長期の動き 6点（分からないときは2点）
+    assert "長い目で見て値上がりしている（3か月〜1年前の相場 ¥7,400 から +35%）" in rising.reasons
+    assert rising.long_trend == 0.35
+
+    falling = resale_ev(
+        make_listing("旧裏 リザードン", 6000), now, card_market(long_trend=-0.3, past_median=14300), tokens=OLD_TOKENS
+    )
+    assert "長い目で見て値下がりしている（3か月〜1年前の相場 ¥14,300 から −30%）" in falling.warnings
+    assert old.score - falling.score == 2
+
+
+def test_market_era_wins_over_the_listing_title(now):
+    result = resale_ev(make_listing("旧裏 リザードン", 6000), now, card_market(era=ERAS["sm"]), tokens=OLD_TOKENS)
+    assert result.era is ERAS["sm"]
+    assert "再販が終わった年代のカード（SM・2016〜2019年）" in result.reasons
+
+
+def test_damage_is_not_discounted_twice_when_most_sales_are_worn(now):
+    worn = card_market(condition=4)  # 売れたカードの多くが「やや傷や汚れあり」（旧裏に多い）
+    same = resale_ev(make_listing("旧裏 リザードン", 6000, condition=4), now, worn, tokens=OLD_TOKENS)
+    assert same.expected_sale == 10000
+    assert any("割り引いていません" in warning for warning in same.warnings)
+    worse = resale_ev(make_listing("旧裏 リザードン", 4000, condition=5), now, worn, tokens=OLD_TOKENS)
+    assert worse.expected_sale == round(10000 * 0.5 / 0.7)
+    assert "×71%・傷や汚れありのため" in worse.reasons[0]
+    better = resale_ev(make_listing("旧裏 リザードン", 6000, condition=2), now, worn, tokens=OLD_TOKENS)
+    assert better.expected_sale == 10000  # 状態が良くても相場より高くは見積もらない
+
+
+def test_very_cheap_old_cards_warn_about_copies(now):
+    result = resale_ev(make_listing("旧裏 リザードン", 3000), now, tokens=OLD_TOKENS)
+    assert any("相場の半額以下" in w and "コピー品" in w for w in result.warnings)
+    modern = resale_ev(make_listing("リザードンex SAR 201/165", 3000), now)
+    assert any("相場の半額以下" in w and "コピー品" not in w for w in modern.warnings)

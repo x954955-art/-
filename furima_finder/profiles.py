@@ -1,19 +1,23 @@
 """商品ジャンルごとの判定ルール（プロファイル）。
 
 - default: 一般的な中古品向け。相場は状態（新品・未使用 / 美品 / 傷・汚れあり）ごとに分ける。
-- pokeca : ポケモンカード向け。鑑定（PSA10 など）と BOX のシュリンク有無で相場を分け、
+- pokeca : ポケモンカード向け。鑑定（PSA10 など）・初版・BOX のシュリンク有無で相場を分け、
            オリパ・偽物の可能性・海外版・まとめ売り・サプライ品を除外する。転売目線が既定。
+           年代（旧裏〜MEGA）も推定し、カード番号のない旧裏はポケモンの名前でカードを見分ける。
 """
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from . import text
+from .eras import MODERN, Era, detect_era
 from .models import Listing
+from .pokemon_names import OLD_POKEMON
 
 
 @dataclass(frozen=True)
@@ -37,9 +41,16 @@ class Profile:
     # 転売時に大きめの送料がかかるグループ（BOX など）とその最低送料
     large_groups: frozenset[str] = frozenset()
     large_shipping: int = 0
+    # 年代（旧裏・SM・SV など）の推定。古い年代ほど値上がりしやすいとみて採点に使う
+    era_of: Callable[[Iterable[str]], Era | None] | None = None
+    # スキャンでどのカードか分からなかった出品の理由
+    unknown_card_reason: Callable[[str], str] | None = None
 
     def group(self, listing: Listing) -> str | None:
         return self.group_of(listing.title, listing.condition)
+
+    def missing_card_reason(self, title: str) -> str:
+        return self.unknown_card_reason(title) if self.unknown_card_reason else "カード番号なし"
 
     def exclusion_reason(self, title: str, query_tokens: list[str], *, include_reserved: bool = True) -> str | None:
         reason = text.exclusion_reason(
@@ -116,12 +127,100 @@ POKECA_GROUPS = {
     "psa10": "PSA10",
     "psa9": "PSA9",
     "graded": "鑑定品（その他）",
+    # 旧裏 第1弾の初版（マークなし）や 1ED は、同じカードでも別の相場
+    "raw_1ed": "初版・未鑑定",
+    "psa10_1ed": "初版・PSA10",
+    "psa9_1ed": "初版・PSA9",
+    "graded_1ed": "初版・鑑定品（その他）",
     "box_shrink": "BOX（シュリンク付き）",
     "box_noshrink": "BOX（シュリンクなし）",
     "box": "BOX（シュリンク不明）",
     "other": "カード以外",
 }
 BOX_GROUPS = frozenset({"box_shrink", "box_noshrink", "box", "other"})
+
+# ---- 旧裏（カード番号のない古いカード）
+
+_KYUURA = _p(r"旧裏|(?<!レギュ)(?<!レギュレーション)マーク\s*(なし|無し|無)")
+# 古いカードの手がかり（LV は旧裏とDPの頃の書き方）
+_OLD_HINT = _p(
+    r"旧裏|初版|(?<!レギュ)(?<!レギュレーション)マーク\s*(なし|無し|無)|(?<![a-z])lv\.?\s*\d"
+    r"|(?<![a-z0-9])1\s*ed(?![a-z])|1st\s*edition|ファースト\s*エディション|当時物"
+)
+_FIRST_EDITION = _p(
+    r"初版(?!\s*(では|じゃ|でな))|(?<!レギュ)(?<!レギュレーション)マーク\s*(なし|無し|無)"
+    r"|(?<![a-z0-9])1\s*ed(ition)?(?![a-z])|1st\s*edition|ファースト\s*エディション"
+)
+# 1枚のカードではない商品（パック・BOX・サプライなど）。「拡張パック第1弾」はカードの弾の名前なので除く
+_NOT_SINGLE = _p(
+    r"未開封|(?<![a-z])box(?![a-z])|ボックス|箱|(?<!拡張)パック|スターター|デッキ|ファイル|スリーブ"
+    r"|サプライ|プレイマット|ローダー|バインダー|ジャンボ|ポスター|シール"
+)
+_KANA = re.compile(r"[ァ-ヺー]")
+_OLD_NAMES = {text.normalize(name): name for name in OLD_POKEMON}
+# 長い名前から試す（「ミュウツー」を「ミュウ」、「レアコイル」を「コイル」と読まないため）
+_OLD_NAME = re.compile("|".join(re.escape(name) for name in sorted(_OLD_NAMES, key=len, reverse=True)))
+# 名前の前に付いて別のカードになるもの（「わるいリザードン」「ひかるギャラドス」「カスミのトサキント」）
+_NAME_PREFIXES = {text.normalize(word): word for word in ("わるい", "ひかる", "やさしい")}
+_OWNERS = {
+    text.normalize(word): word
+    for word in (
+        "タケシ", "カスミ", "マチス", "エリカ", "ナツメ", "キョウ", "カツラ", "サカキ", "ロケット団", "R団",
+        "ハヤト", "ツクシ", "アカネ", "マツバ", "シジマ", "ミカン", "ヤナギ", "イブキ", "ワタル",
+        "カンナ", "シバ", "キクコ", "カリン",
+    )
+}
+# 名前にくっついていても区切りとみなす言葉（「ポケモンカードリザードン」「リザードンホロ」など）
+_LEFT_WORDS = tuple(text.normalize(word) for word in ("カード", "ゲーム", "ポケモン", "ポケカ", "キラ", "ホロ", "プロモ", "レア"))
+_RIGHT_WORDS = tuple(
+    text.normalize(word) for word in ("ホロ", "キラ", "プロモ", "レア", "カード", "ポケモン", "ポケカ", "マーク", "の")
+)
+
+
+def _left_ok(before: str) -> bool:
+    """名前の直前が言葉の区切りか（「ファンクラブ」の「クラブ」のように、別の言葉の一部ではないか）。"""
+    return not before or not _KANA.match(before[-1]) or before.endswith(_LEFT_WORDS)
+
+
+def _name_prefix(before: str) -> str | None:
+    """名前の前に付く「わるい」「カスミの」など。付かなければ空文字、別の言葉の一部なら None。"""
+    for kana, word in _NAME_PREFIXES.items():
+        if before.endswith(kana) and _left_ok(before[: -len(kana)]):
+            return word
+    if before.endswith("ノ"):  # 「の」（正規化でカタカナになっている）
+        head = before[:-1]
+        for kana, word in _OWNERS.items():
+            if head.endswith(kana) and _left_ok(head[: -len(kana)]):
+                return word + "の"
+        return "" if _left_ok(head) else None  # 「旧裏のリザードン」の「の」
+    return "" if _left_ok(before) else None
+
+
+def old_card_name(title: str) -> str | None:
+    """タイトルに書かれた第1・第2世代のポケモンの名前（「わるい」「カスミの」などが付けば込み）。
+    見つからないか、違う名前が2つ以上あれば None。"""
+    normalized = text.normalize(title)
+    names = set()
+    for match in _OLD_NAME.finditer(normalized):
+        prefix = _name_prefix(normalized[: match.start()])
+        after = normalized[match.end() :]
+        if prefix is None or (after and _KANA.match(after[0]) and not after.startswith(_RIGHT_WORDS)):
+            continue
+        names.add(prefix + _OLD_NAMES[match.group()])
+    return names.pop() if len(names) == 1 else None
+
+
+def _is_old_card(normalized: str) -> bool:
+    """カード番号のない古いカード（旧裏・初版・LV などの手がかりと、ポケモンの名前がある）。"""
+    return bool(_OLD_HINT.search(normalized) and not _NOT_SINGLE.search(normalized) and old_card_name(normalized))
+
+
+def _first_edition(normalized: str) -> bool:
+    """初版（旧裏 第1弾のマークなし・1ED）。SV以降のカードに書かれた「初版」は区別しない。"""
+    if not _FIRST_EDITION.search(normalized):
+        return False
+    era = detect_era([normalized])
+    return era is None or era.key not in MODERN
 
 
 def _looks_like_card(normalized: str) -> bool:
@@ -130,6 +229,7 @@ def _looks_like_card(normalized: str) -> bool:
         or _RARITY.search(normalized)
         or _PROMO.search(normalized)
         or _GRADED.search(normalized)
+        or _is_old_card(normalized)
     )
 
 
@@ -137,18 +237,23 @@ def _looks_like_box(normalized: str) -> bool:
     return bool(_BOX.search(normalized) or _PACK.search(normalized))
 
 
+def _grade(normalized: str) -> str:
+    if _NOT_GRADED_YET.search(normalized):
+        return "raw"
+    if _PSA10.search(normalized):
+        return "psa10"
+    if _PSA9.search(normalized):
+        return "psa9"
+    if _GRADED.search(normalized):
+        return "graded"
+    return "raw"
+
+
 def pokeca_group(title: str, condition: int | None) -> str:
     normalized = text.normalize(title)
     if _looks_like_card(normalized):
-        if _NOT_GRADED_YET.search(normalized):
-            return "raw"
-        if _PSA10.search(normalized):
-            return "psa10"
-        if _PSA9.search(normalized):
-            return "psa9"
-        if _GRADED.search(normalized):
-            return "graded"
-        return "raw"
+        grade = _grade(normalized)
+        return f"{grade}_1ed" if _first_edition(normalized) else grade
     if _BOX.search(normalized):
         if _SHRINK_NO.search(normalized):
             return "box_noshrink"
@@ -159,9 +264,21 @@ def pokeca_group(title: str, condition: int | None) -> str:
 
 
 def pokeca_card_key(title: str) -> str | None:
-    """カード番号（例: 201/165, 001/SV-P）。番号が書かれていなければ None。"""
-    match = _CARD_NUMBER.search(text.normalize(title))
-    return f"{match.group(1)}/{match.group(2)}".upper() if match else None
+    """どのカードか。カード番号（例: 201/165, 001/SV-P）か、番号のない旧裏ならカード名
+    （例: 旧裏 わるいリザードン）。分からなければ None。"""
+    normalized = text.normalize(title)
+    match = _CARD_NUMBER.search(normalized)
+    if match:
+        return f"{match.group(1)}/{match.group(2)}".upper()
+    if _KYUURA.search(normalized) and not _NOT_SINGLE.search(normalized):
+        name = old_card_name(normalized)
+        if name:
+            return f"旧裏 {name}" + (" プロモ" if _PROMO.search(normalized) else "")
+    return None
+
+
+def _pokeca_unknown_card(title: str) -> str:
+    return "カード名を特定できない" if _KYUURA.search(text.normalize(title)) else "カード番号なし"
 
 
 def pokeca_rarity(title: str) -> str | None:
@@ -170,13 +287,19 @@ def pokeca_rarity(title: str) -> str | None:
 
 
 def _pokeca_kind_mismatch(title: str, query_tokens: list[str]) -> str | None:
-    """カードを探しているのにBOXやサプライ品、BOXを探しているのに単品カード、を外す。"""
+    """カードを探しているのにBOXやサプライ品、BOXを探しているのに単品カード、
+    カード番号（旧裏ならカード名）を指定しているのに別のカード、を外す。"""
     query = " ".join(query_tokens)
     normalized = text.normalize(title)
     if _looks_like_box(query):
         return "単品カード" if _looks_like_card(normalized) else None
     if _looks_like_card(query) and not _looks_like_card(normalized):
         return "BOX・パック" if _looks_like_box(normalized) else "カード以外・カードを特定できない"
+    wanted = pokeca_card_key(query)
+    if wanted is not None:
+        key = pokeca_card_key(normalized)
+        if key is not None and key != wanted:
+            return "別のカード"
     return None
 
 
@@ -229,6 +352,8 @@ POKECA = Profile(
     rarity=pokeca_rarity,
     large_groups=BOX_GROUPS,
     large_shipping=520,  # 宅急便コンパクト・ゆうパケットプラス程度
+    era_of=detect_era,
+    unknown_card_reason=_pokeca_unknown_card,
 )
 
 

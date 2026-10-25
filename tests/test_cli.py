@@ -95,6 +95,7 @@ def test_resale_mode_ranks_by_profit(tmp_path):
     page = html_path.read_text(encoding="utf-8")
     assert '<span class="badge profit">利益 ¥5,250</span>' in page
     assert '<option value="profit">利益が大きい順</option>' in page
+    assert '<option value="long">値上がり傾向順</option>' in page
     assert "古物商許可" in page
 
     rows = list(csv.reader(io.StringIO(csv_path.read_bytes().decode("utf-8-sig"))))
@@ -102,6 +103,7 @@ def test_resale_mode_ranks_by_profit(tmp_path):
     assert rows[1][header.index("利益")] == "5250"
     assert rows[1][header.index("利益率(%)")] == "25.0"
     assert rows[1][header.index("直近30日の販売数")] == "12"
+    assert rows[1][header.index("長期の値動き(%)")] == "" and rows[1][header.index("年代")] == ""
 
     recommendation = json.loads(json_path.read_text(encoding="utf-8"))[0]["recommendations"][0]
     assert (recommendation["expected_sale"], recommendation["profit"], recommendation["roi"]) == (30000, 5250, 0.25)
@@ -305,11 +307,51 @@ def test_scan_end_to_end_output(tmp_path):
     code, out, err = run(["ポケモンカード SAR", "--profile", "pokeca", "--scan", "--no-color", "--details", "0"], sources=sources)
     assert code == 0
     assert "■「ポケモンカード SAR」のスキャン" in out
-    assert "カード番号ごとに売り切れ価格を調べ" in out
+    assert "カード番号ごと（旧裏はカード名ごと）に売り切れ価格を調べ" in out
     assert "仕入れ ¥6,000 → 利益 ¥2,770（利益率 46%）" in out
     assert "売値の目安 ¥10,000（未鑑定の相場・直近14日の中央値）" in out
     assert "[1/1] 201/165 の売り切れ価格を取得中" in err
 
+
+
+def test_old_card_output_shows_era_and_long_term_trend(tmp_path):
+    from datetime import timedelta
+
+    from .conftest import NOW
+    from .conftest import make_listing as listing
+
+    on_sale = [listing("旧裏 リザードン LV.76", 6000, id="m9", condition=3, age=timedelta(hours=1))]
+    sold = [
+        listing(f"旧裏 リザードン {i}", price, sold=True, condition=3, updated_at=NOW - timedelta(days=days))
+        for i, (price, days) in enumerate([(10000, 2), (10000, 5), (10000, 9), (10000, 20)] + [(8000, 120)] * 4)
+    ]
+    sources = {"mercari": FakeSource(sold=sold, on_sale=on_sale)}
+    html_path, csv_path, json_path = tmp_path / "r.html", tmp_path / "r.csv", tmp_path / "r.json"
+    code, out, _ = run(
+        ["旧裏 リザードン", "--profile", "pokeca", "--no-color", "--details", "0",
+         "--html", str(html_path), "--csv", str(csv_path), "--json", str(json_path)],
+        sources=sources,
+    )
+    assert code == 0
+    assert "年代の目安: 旧裏（1996〜2001年）" in out
+    assert "3か月〜1年前比 +25%" in out
+    assert "長い目で見て値上がりしている（3か月〜1年前の相場 ¥8,000 から +25%）" in out
+    assert "古い年代のカード（旧裏・1996〜2001年）" in out
+
+    page = html_path.read_text(encoding="utf-8")
+    assert '<span class="chip">旧裏（1996〜2001年）</span>' in page
+    assert '<span class="chip">値上がり傾向</span>' in page
+    assert 'data-long="0.2500"' in page
+
+    rows = list(csv.reader(io.StringIO(csv_path.read_bytes().decode("utf-8-sig"))))
+    header = rows[0]
+    assert rows[1][header.index("年代")] == "旧裏"
+    assert rows[1][header.index("長期の値動き(%)")] == "25.0"
+
+    data = json.loads(json_path.read_text(encoding="utf-8"))[0]
+    assert data["market"]["era"] == "旧裏"
+    assert data["recommendations"][0]["era"] == "旧裏"
+    assert data["recommendations"][0]["long_trend"] == 0.25
 
 
 def test_open_shows_the_report_in_the_browser_once(tmp_path, monkeypatch):

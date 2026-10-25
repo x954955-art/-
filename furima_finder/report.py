@@ -33,12 +33,21 @@ def _activity(stats: PriceStats) -> str:
         parts.append(f"30日で{stats.sales_30d}件")
     if stats.trend is not None:
         parts.append(f"直近7日 {signed_pct(stats.trend)}")
+    if stats.long_trend is not None:
+        parts.append(f"3か月〜1年前比 {signed_pct(stats.long_trend)}")
     return "・" + "・".join(parts) if parts else ""
 
 
 def market_lines(market: MarketStats, *, fetch_failed: bool = False) -> list[str]:
+    lines = _price_lines(market, fetch_failed=fetch_failed)
+    if market.era is not None:
+        lines.append(f"年代の目安: {market.era.description}")
+    return lines
+
+
+def _price_lines(market: MarketStats, *, fetch_failed: bool) -> list[str]:
     if market.basis == "scan":
-        return ["カード番号ごとに売り切れ価格を調べ、そのカードの相場と比べています"]
+        return ["カード番号ごと（旧裏はカード名ごと）に売り切れ価格を調べ、そのカードの相場と比べています"]
     if market.overall is None:
         if fetch_failed:
             return ["相場: 出品を取得できなかったため算出できませんでした"]
@@ -154,7 +163,7 @@ def print_result(result: SearchResult, out: TextIO, *, top: int, color: bool) ->
 
 CSV_COLUMNS = [
     "キーワード", "順位", "スコア", "サイト", "商品名", "価格", "実質価格", "比較した相場", "相場からの割引率(%)",
-    "売値の目安", "利益", "利益率(%)", "直近30日の販売数", "相場の動き(%)",
+    "売値の目安", "利益", "利益率(%)", "直近30日の販売数", "相場の動き(%)", "長期の値動き(%)", "年代",
     "状態", "送料", "出品日時", "オークション終了日時", "理由", "注意", "URL",
 ]
 
@@ -177,7 +186,8 @@ def write_csv(results: list[SearchResult], path: Path) -> None:
                     listing.price, evaluation.effective_price, evaluation.reference_price,
                     round(evaluation.discount * 100, 1), _optional(evaluation.expected_sale),
                     _optional(evaluation.profit), _optional(evaluation.roi, 100), _optional(evaluation.sales_30d),
-                    _optional(evaluation.trend, 100), listing.condition_label or "", shipping,
+                    _optional(evaluation.trend, 100), _optional(evaluation.long_trend, 100),
+                    evaluation.era.label if evaluation.era else "", listing.condition_label or "", shipping,
                     _jst(listing.created_at), _jst(listing.auction_end) if listing.is_auction else "",
                     " / ".join(r for r in evaluation.reasons if r),
                     " / ".join(evaluation.warnings), listing.url,
@@ -212,6 +222,8 @@ def _evaluation_json(evaluation: Evaluation) -> dict:
         "roi": None if evaluation.roi is None else round(evaluation.roi, 4),
         "sales_30d": evaluation.sales_30d,
         "trend": None if evaluation.trend is None else round(evaluation.trend, 4),
+        "long_trend": None if evaluation.long_trend is None else round(evaluation.long_trend, 4),
+        "era": evaluation.era.label if evaluation.era else None,
     }
 
 
@@ -225,6 +237,7 @@ def _market_json(market: MarketStats) -> dict:
         "excluded_irrelevant": market.excluded_irrelevant,
         "excluded_rules": market.excluded_rules,
         "excluded_outliers": market.excluded_outliers,
+        "era": market.era.label if market.era else None,
         "notes": market.notes(),
     }
 
@@ -326,6 +339,11 @@ def _card(evaluation: Evaluation) -> str:
     if listing.condition_label:
         chips.append(listing.condition_label)
     chips.append({True: "送料込み", False: "着払い", None: "送料不明"}[listing.shipping_included])
+    era = evaluation.era
+    if era is not None and era.points > 0:  # SV 以降は書かない（ほとんどのカードが当てはまるため）
+        chips.append(era.description)
+    if evaluation.long_trend is not None and evaluation.long_trend >= 0.10:
+        chips.append("値上がり傾向")
     image = (
         f'<img src="{e(listing.thumbnail)}" alt="" loading="lazy" referrerpolicy="no-referrer"'
         ' onerror="this.parentNode.classList.add(\'noimg\');this.remove()">'
@@ -347,10 +365,12 @@ def _card(evaluation: Evaluation) -> str:
     if evaluation.effective_price != listing.price:
         effective = f" <small>送料を足すと約 {e(yen(evaluation.effective_price))}</small>"
     created = listing.created_at.timestamp() if listing.created_at else 0
+    # 長期の値動きが分からないものは「値上がり傾向順」で最後にする
+    long_trend = evaluation.long_trend if evaluation.long_trend is not None else -9
     return f"""
 <article class="card" data-score="{evaluation.score}" data-discount="{evaluation.discount:.4f}"
   data-profit="{evaluation.profit or 0}" data-roi="{evaluation.roi or 0:.4f}"
-  data-price="{evaluation.effective_price}" data-created="{created:.0f}">
+  data-long="{long_trend:.4f}" data-price="{evaluation.effective_price}" data-created="{created:.0f}">
   <div class="thumb{'' if image else ' noimg'}">{image}{badge}<span class="score">{evaluation.score}点</span></div>
   <div class="body">
     <div class="title">{e(listing.title)}</div>
@@ -365,7 +385,10 @@ def _card(evaluation: Evaluation) -> str:
 
 
 _SORTS = [("score", "おすすめ順"), ("discount", "割引率が大きい順"), ("price", "安い順"), ("created", "新着順")]
-_RESALE_SORTS = [("score", "おすすめ順"), ("profit", "利益が大きい順"), ("roi", "利益率が高い順"), ("price", "安い順"), ("created", "新着順")]
+_RESALE_SORTS = [
+    ("score", "おすすめ順"), ("profit", "利益が大きい順"), ("roi", "利益率が高い順"),
+    ("long", "値上がり傾向順"), ("price", "安い順"), ("created", "新着順"),
+]
 _RESALE_NOTE = (
     "利益は「相場の価格で売れた場合」の目安です。仕入れて転売することを繰り返す場合は古物商許可が必要になり、"
     "メルカリでは事業者はフリマアプリではなくメルカリShopsを使う決まりです。"

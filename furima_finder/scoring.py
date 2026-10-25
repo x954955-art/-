@@ -3,8 +3,8 @@
 お得に買う（既定）: 100点満点
   価格 55点（相場より40%以上安いと満点）/ 状態 15点 / 出品者 15点 / 出品の新しさ 10点 / 送料 5点
 転売目線（--resale）: 100点満点
-  利益額 35点（1万円以上で満点）/ 利益率 20点（60%以上で満点）/ 売れ行き 15点 /
-  相場の動き 10点 / 状態 10点 / 出品者 10点
+  利益額 30点（1万円以上で満点）/ 利益率 20点（60%以上で満点）/ 売れ行き 15点 /
+  値動き 15点（直近7日 5点・3か月〜1年前と比べた長期の動き 6点・年代 4点）/ 状態 10点 / 出品者 10点
 どちらも、ジャンク・動作未確認などの注意ワードやオークション形式の分を差し引く。
 """
 
@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from . import text
+from .eras import Era
 from .market import MarketStats, PriceStats, effective_price
 from .models import Listing
 from .profiles import DEFAULT, Profile
@@ -38,19 +39,26 @@ UNKNOWN_FRESHNESS_POINTS = 3
 SELLER_POINTS = {"top": 15, "good": 12, "ok": 8, "few": 4, "bad": 0, "shop": 10, "unknown": 7}
 
 # 転売目線
-PROFIT_POINTS = 35
+PROFIT_POINTS = 30
 PROFIT_FLOOR = 250  # この利益で0点、40倍（1万円）で満点（対数で増える）
 ROI_POINTS = 20
 FULL_ROI = 0.6
 LIQUIDITY_STEPS = [(30, 15), (15, 12), (8, 9), (3, 5)]
 UNKNOWN_LIQUIDITY_POINTS = 7
-UNKNOWN_TREND_POINTS = 5
+# 値動き（15点）: 直近7日の動き 5点 / 3か月〜1年前と比べた長期の動き 6点 / 年代 4点
+SHORT_TREND_STEPS = [(0.10, 5), (-0.05, 3), (-0.15, 1)]
+UNKNOWN_SHORT_TREND_POINTS = 2
+LONG_TREND_STEPS = [(0.30, 6), (0.10, 5), (-0.10, 3), (-0.25, 1)]
+UNKNOWN_LONG_TREND_POINTS = 2
+UNKNOWN_ERA_POINTS = 1
+OLD_ERA_POINTS = 3  # 年代の点数がこれ以上なら「古いカード」として説明する
 HIGH_SPREAD = 0.6
 RESALE_CONDITION_POINTS = {1: 10, 2: 9, 3: 7, 4: 3, 5: 1, 6: 0}
 UNKNOWN_RESALE_CONDITION_POINTS = 5
 RESALE_SELLER_POINTS = {"top": 10, "good": 8, "ok": 5, "few": 3, "bad": 0, "shop": 7, "unknown": 5}
 
-# 傷・汚れありは相場（主に美品の価格）どおりには売れないので、転売の売値を割り引く
+# 傷・汚れありは相場（主に美品の価格）どおりには売れないので、転売の売値を割り引く。
+# 売れたカードの多くも同じくらいの状態（旧裏など）なら、その差の分だけ割り引く
 CONDITION_SALE_FACTORS = {4: 0.7, 5: 0.5, 6: 0.3}
 
 # 共通の減点
@@ -93,6 +101,8 @@ class Evaluation:
     roi: float | None = None
     sales_30d: int | None = None
     trend: float | None = None
+    long_trend: float | None = None
+    era: Era | None = None  # カードの年代（ポケカのみ）
 
     @property
     def recommended(self) -> bool:
@@ -175,13 +185,68 @@ def _seller_tier(listing: Listing) -> tuple[str, str | None, str | None]:
     return "unknown", f"出品者の評価 {total:,}件", None
 
 
+def _warn_if_too_cheap(result: Evaluation) -> None:
+    if result.discount >= TOO_CHEAP:
+        message = "相場の半額以下：偽物・説明不足・写真と違う等がないかよく確認"
+        if result.era is not None and result.era.points >= OLD_ERA_POINTS:
+            message += "（古いカードはコピー品も出回っています）"
+        result.warnings.append(message)
+
+
 def _bargain_points(result: Evaluation) -> int:
     points = _round(min(max(result.discount, 0.0), FULL_DISCOUNT) / FULL_DISCOUNT * PRICE_POINTS)
     if result.discount > 0:
         saving = result.reference_price - result.effective_price
         result.reasons.append(f"{result.reference_label} {yen(result.reference_price)} より {yen(saving)} 安い")
-    if result.discount >= TOO_CHEAP:
-        result.warnings.append("相場の半額以下：偽物・説明不足・写真と違う等がないかよく確認")
+    _warn_if_too_cheap(result)
+    return points
+
+
+def sale_factor(condition: int | None, typical: int | None) -> float:
+    """状態による売値の割引（1 なら割り引かない）。typical は売れた出品のよくある状態。"""
+    factor = CONDITION_SALE_FACTORS.get(condition, 1.0) / CONDITION_SALE_FACTORS.get(typical, 1.0)
+    return min(factor, 1.0)
+
+
+def _step_points(value: float, steps: list[tuple[float, int]]) -> int:
+    return next((points for minimum, points in steps if value >= minimum), 0)
+
+
+def _movement_points(result: Evaluation, stats: PriceStats) -> int:
+    """値動き（15点）: 直近7日の動き・3か月〜1年前と比べた長期の動き・年代（古いほど値上がりしやすい）。"""
+    points = 0
+    trend = stats.trend
+    if trend is None:
+        points += UNKNOWN_SHORT_TREND_POINTS
+    else:
+        points += _step_points(trend, SHORT_TREND_STEPS)
+        if trend >= 0.10:
+            result.reasons.append(f"相場が上がっている（直近7日 {signed_pct(trend)}）")
+        elif trend < -0.15:
+            result.warnings.append(f"相場が下がっている（直近7日 {signed_pct(trend)}）")
+        elif trend < -0.05:
+            result.warnings.append(f"相場がやや下がっている（直近7日 {signed_pct(trend)}）")
+
+    long_trend = stats.long_trend
+    if long_trend is None or stats.past_median is None:
+        points += UNKNOWN_LONG_TREND_POINTS
+    else:
+        points += _step_points(long_trend, LONG_TREND_STEPS)
+        since = f"3か月〜1年前の相場 {yen(stats.past_median)} から {signed_pct(long_trend)}"
+        if long_trend >= 0.10:
+            result.reasons.append(f"長い目で見て値上がりしている（{since}）")
+        elif long_trend < -0.10:
+            result.warnings.append(f"長い目で見て値下がりしている（{since}）")
+
+    era = result.era
+    if era is None:
+        points += UNKNOWN_ERA_POINTS
+    else:
+        points += era.points
+        if era.points >= OLD_ERA_POINTS:
+            result.reasons.append(f"古い年代のカード（{era.label}・{era.years}）：再販がなく値上がりしやすい")
+        elif era.points > 0:
+            result.reasons.append(f"再販が終わった年代のカード（{era.label}・{era.years}）")
     return points
 
 
@@ -192,12 +257,23 @@ def _resale_points(result: Evaluation, stats: PriceStats, settings: Settings, pr
         result.warnings.append("相場のばらつきが大きい（別のカードや状態が混ざっている可能性）")
     elif stats.recent_median:
         sale, how = stats.recent_median, "直近14日の中央値"
+    elif stats.month_median:
+        # 売れるペースがゆっくりなカードは、昔の安い（高い）売り切れが混ざらないよう直近30日を使う
+        sale, how = stats.month_median, "直近30日の中央値"
     else:
         sale, how = stats.median, "中央値"
-    factor = CONDITION_SALE_FACTORS.get(listing.condition)
-    if factor:
+    factor = sale_factor(listing.condition, stats.condition)
+    if factor < 1:
         sale = round(sale * factor)
         how += f"×{factor:.0%}・{listing.condition_label}のため"
+    if listing.condition is not None and listing.condition >= 4:
+        if factor < 1:
+            result.warnings.append("傷・汚れありの状態：売値を低めに見積もっています。実物の傷を写真でよく確認")
+        else:
+            result.warnings.append(
+                "傷・汚れありの状態：売り切れも同じくらいの状態が多いため売値は割り引いていません。実物の傷を写真でよく確認"
+            )
+    _warn_if_too_cheap(result)
     shipping = profile.resale_shipping(listing, settings.resale_shipping)
     result.expected_sale = sale
     result.profit = round(sale * (1 - settings.fee_rate)) - shipping - result.effective_price
@@ -220,20 +296,7 @@ def _resale_points(result: Evaluation, stats: PriceStats, settings: Settings, pr
             result.reasons.append(f"直近30日で{stats.sales_30d}件売れている")
         else:
             result.warnings.append(f"売れ行きが少なめ（直近30日で{stats.sales_30d}件）")
-
-    if stats.trend is None:
-        points += UNKNOWN_TREND_POINTS
-    elif stats.trend >= 0.10:
-        points += 10
-        result.reasons.append(f"相場が上がっている（直近7日 {signed_pct(stats.trend)}）")
-    elif stats.trend >= -0.05:
-        points += 7
-    elif stats.trend >= -0.15:
-        points += 3
-        result.warnings.append(f"相場がやや下がっている（直近7日 {signed_pct(stats.trend)}）")
-    else:
-        result.warnings.append(f"相場が下がっている（直近7日 {signed_pct(stats.trend)}）")
-    return points
+    return points + _movement_points(result, stats)
 
 
 def evaluate(
@@ -268,6 +331,10 @@ def evaluate(
     result.discount = round(1 - result.effective_price / stats.median, 6)
     result.sales_30d = stats.sales_30d
     result.trend = stats.trend
+    result.long_trend = stats.long_trend
+    result.era = market.era
+    if result.era is None and profile.era_of is not None:
+        result.era = profile.era_of([listing.title])
 
     resale = settings.resale
     points = _resale_points(result, stats, settings, profile) if resale else _bargain_points(result)
@@ -276,8 +343,6 @@ def evaluate(
     if listing.condition in condition_table:
         points += condition_table[listing.condition]
         result.reasons.append(listing.condition_label or "")
-        if resale and listing.condition >= 4:
-            result.warnings.append("傷・汚れありの状態：売値を低めに見積もっています。実物の傷を写真でよく確認")
     else:
         points += UNKNOWN_RESALE_CONDITION_POINTS if resale else UNKNOWN_CONDITION_POINTS
         if settings.condition_filtered:

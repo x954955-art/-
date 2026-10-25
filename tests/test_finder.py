@@ -256,3 +256,49 @@ def test_scan_uses_buy_only_sites_for_candidates_and_sold_sites_for_prices(now):
     assert any(query.sold for query in mercari.queries)
     ids = [e.listing.id for e in result.recommendations]
     assert ids[:2] == ["z1", "zard-cheap"]  # Yahoo!フリマの出品もメルカリの相場で採点される
+
+
+class KeywordSource(FakeSource):
+    """売り切れ検索では、キーワードごとに用意した出品を返す。"""
+
+    def __init__(self, sold_by_keyword, **kwargs):
+        super().__init__(**kwargs)
+        self.sold_by_keyword = sold_by_keyword
+
+    def search(self, query):
+        self.queries.append(query)
+        if query.sold:
+            return self.sold_by_keyword.get(query.keyword, [])
+        return [x for x in self.on_sale if not query.price_min or x.price >= query.price_min]
+
+
+def test_scan_finds_old_back_cards_by_name(now):
+    on_sale = [
+        card("ポケモンカード 旧裏 リザードン LV.76", 6000, id="zard", age=timedelta(hours=1)),
+        card("旧裏 わるいリザードン", 3000, id="dark", age=timedelta(hours=2)),
+        card("旧裏 リザードン 初版 マークなし", 30000, id="first", age=timedelta(hours=3)),
+        card("旧裏 オーキド博士", 2000, id="trainer"),
+        card("旧裏 まとめ売り 30枚", 5000, id="bulk"),
+    ]
+    sold = {
+        "旧裏 リザードン": [card(f"旧裏 リザードン 美品 {i}", 10000, sold=True) for i in range(6)]
+        + [card(f"旧裏 リザードン 初版 マークなし {i}", 50000, sold=True) for i in range(4)]
+        + [card("旧裏 わるいリザードン", 3000, sold=True)],  # 別のカードは相場に入れない
+        "旧裏 わるいリザードン": [card("旧裏 わるいリザードン", 3500, sold=True) for _ in range(5)],
+    }
+    source = KeywordSource(sold, on_sale=on_sale)
+    plan = SearchPlan(keyword="ポケモンカード 旧裏", profile="pokeca", scan=True, details=0, settings=POKECA_SETTINGS)
+    result = run_scan(plan, {"mercari": source}, now=now)
+
+    # カード名のまま売り切れを探す（レアリティは付けない）
+    assert [q.keyword for q in source.queries if q.sold] == ["旧裏 リザードン", "旧裏 わるいリザードン"]
+    by_id = {e.listing.id: e for e in result.recommendations}
+    assert set(by_id) == {"zard", "first"}
+    assert by_id["zard"].expected_sale == 10000  # 通常版の相場
+    assert by_id["first"].expected_sale == 50000  # 初版は初版の相場
+    assert by_id["first"].reference_label == "初版・未鑑定の相場"
+    assert by_id["zard"].era.key == "kyuura"
+    assert any("古い年代のカード" in reason for reason in by_id["zard"].reasons)
+    assert result.excluded["利益が少ない"] == 1  # わるいリザードンの相場は 3,500円
+    assert result.excluded["カード名を特定できない"] == 1  # オーキド博士
+    assert result.excluded["まとめ売り・セット"] == 1

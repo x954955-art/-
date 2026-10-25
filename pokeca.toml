@@ -21,14 +21,31 @@ min_sales = 3
 keyword = "ポケモンカード SAR"
 scan = true
 min_price = 2000
-max_price = 30000
+max_price = 50000
+
+# 旧裏（1996〜2001年ごろの古いカード）。カード番号がないので、カード名（リザードンなど）ごとに相場を調べる
+# 古いカードは売れるペースがゆっくりなので、直近30日に1件以上売れていれば候補にする（min_sales = 1）
+# 旧裏を探さないときは、下の6行の先頭に「# 」を付けて上書き保存する
+[[search]]
+keyword = "ポケモンカード 旧裏"
+scan = true
+min_price = 2000
+max_price = 50000
+min_sales = 1
 
 # ほかのレアリティも探すときは、下の5行の先頭の「# 」を消して上書き保存する
 # [[search]]
 # keyword = "ポケモンカード SR"
 # scan = true
 # min_price = 2000
-# max_price = 30000
+# max_price = 50000
+
+# SM（2016〜2019年）のころのSR（GX）を探す例（先頭の「# 」を消す）
+# [[search]]
+# keyword = "ポケモンカード SR GX"
+# scan = true
+# min_price = 2000
+# max_price = 50000
 
 # 特定のカードを見張るときの例（先頭の「# 」を消す）
 # [[search]]
