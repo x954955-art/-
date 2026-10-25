@@ -259,17 +259,19 @@ def test_scan_uses_buy_only_sites_for_candidates_and_sold_sites_for_prices(now):
 
 
 class KeywordSource(FakeSource):
-    """売り切れ検索では、キーワードごとに用意した出品を返す。"""
+    """売り切れ検索では、キーワードごとに用意した出品を返す（販売中も、用意があればキーワードごと）。"""
 
-    def __init__(self, sold_by_keyword, **kwargs):
+    def __init__(self, sold_by_keyword, on_sale_by_keyword=None, **kwargs):
         super().__init__(**kwargs)
         self.sold_by_keyword = sold_by_keyword
+        self.on_sale_by_keyword = on_sale_by_keyword
 
     def search(self, query):
         self.queries.append(query)
         if query.sold:
             return self.sold_by_keyword.get(query.keyword, [])
-        return [x for x in self.on_sale if not query.price_min or x.price >= query.price_min]
+        pool = self.on_sale if self.on_sale_by_keyword is None else self.on_sale_by_keyword.get(query.keyword, [])
+        return [x for x in pool if not query.price_min or x.price >= query.price_min]
 
 
 def test_scan_finds_old_back_cards_by_name(now):
@@ -302,3 +304,45 @@ def test_scan_finds_old_back_cards_by_name(now):
     assert result.excluded["利益が少ない"] == 1  # わるいリザードンの相場は 3,500円
     assert result.excluded["カード名を特定できない"] == 1  # オーキド博士
     assert result.excluded["まとめ売り・セット"] == 1
+
+
+def test_scan_several_keywords_and_layman_titles(now):
+    sure = card("旧裏 リザードン LV.76", 7000, id="sure", age=timedelta(hours=1))
+    layman = card("昔のポケモンカード リザードン キラキラ", 4000, id="layman", age=timedelta(hours=2))
+    modern = card("昔のポケモンカード リザードンex", 3000, id="modern", age=timedelta(hours=3))
+    on_sale = {
+        "ポケモンカード 旧裏": [sure],
+        "ポケモンカード 昔": [layman, modern, sure],  # 同じ出品が両方のキーワードで見つかる
+    }
+    sold = {
+        "旧裏 リザードン": [card(f"旧裏 リザードン {i}", 10000, sold=True) for i in range(6)]
+        # 「旧裏」と書かれていない売り切れは、どのカードか確かでないので相場に入れない
+        + [card("昔のポケモンカード リザードン", 3000, sold=True)],
+    }
+    source = KeywordSource(sold, on_sale_by_keyword=on_sale)
+    plan = SearchPlan(
+        keyword="ポケモンカード 旧裏", extra_keywords=["ポケモンカード 昔"], profile="pokeca", scan=True,
+        details=0, settings=POKECA_SETTINGS,
+    )
+    result = run_scan(plan, {"mercari": source}, now=now)
+
+    assert plan.label == "ポケモンカード 旧裏 / ポケモンカード 昔"
+    assert [q.keyword for q in source.queries if not q.sold] == ["ポケモンカード 旧裏", "ポケモンカード 昔"]
+    assert [q.keyword for q in source.queries if q.sold] == ["旧裏 リザードン"]  # 売り切れはカードごとに1回
+    assert result.checked == 3  # 重なった出品は1件と数える
+    by_id = {e.listing.id: e for e in result.recommendations}
+    assert set(by_id) == {"sure", "layman"}
+    assert by_id["sure"].assumed_card is None
+    assert by_id["layman"].assumed_card == "旧裏 リザードン"
+    assert by_id["layman"].expected_sale == 10000
+    assert "写真で本当にそのカードか必ず確認" in by_id["layman"].warnings[0]
+    assert result.excluded["カード名を特定できない"] == 1  # 「リザードンex」は旧裏ではない
+
+
+def test_layman_titles_are_not_guessed_in_modern_scans(now):
+    layman = card("昔のポケモンカード リザードン", 4000, id="layman")
+    source = KeywordSource({}, on_sale=[layman])
+    plan = SearchPlan(keyword="ポケモンカード SAR", profile="pokeca", scan=True, details=0, settings=POKECA_SETTINGS)
+    result = run_scan(plan, {"mercari": source}, now=now)
+    assert not any(q.sold for q in source.queries)
+    assert result.excluded["カード名を特定できない"] == 1

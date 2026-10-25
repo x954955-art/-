@@ -1,7 +1,7 @@
 """キーワードごとに「相場を調べる → 販売中を集める → 採点する」までを行う。
 
 - run_search: 1つの商品（キーワード）について、売り切れから相場を出して販売中を採点する
-- run_scan  : 広いキーワード（例「ポケモンカード SAR」）で販売中を集め、カード番号（旧裏は
+- run_scan  : 広いキーワード（例「ポケモンカード SAR」、複数可）で販売中を集め、カード番号（旧裏は
               カード名）ごとに売り切れを調べて、カードをまたいで転売候補を探す
 """
 
@@ -48,6 +48,17 @@ class SearchPlan:
     scan: bool = False
     scan_cards: int = 20  # スキャンで相場を調べるカードの種類数
     settings: Settings = field(default_factory=Settings)
+    # スキャンで一緒に探すキーワード（例「ポケモンカード 昔」）。見つかったカードの相場はまとめて調べる
+    extra_keywords: list[str] = field(default_factory=list)
+
+    @property
+    def keywords(self) -> list[str]:
+        return [self.keyword, *self.extra_keywords]
+
+    @property
+    def label(self) -> str:
+        """表示用のキーワード（複数なら「 / 」でつなぐ）。"""
+        return " / ".join(self.keywords)
 
 
 @dataclass
@@ -253,28 +264,40 @@ def run_scan(
         raise ValueError(f"プロファイル {profile.name} はスキャンに対応していません")
     # カード番号で同じカードかどうかを判定するので、タイトルとキーワードの一致は見ない
     settings = replace(plan.settings, min_match=0.0)
-    query_tokens = text.tokens(plan.keyword)
+    query_tokens = list(dict.fromkeys(token for keyword in plan.keywords for token in text.tokens(keyword)))
     conditions = CONDITION_FILTERS[plan.condition]
     active = [sources[name] for name in plan.sources]
     errors: list[str] = []
     notes: list[str] = []
 
-    progress(f"「{plan.keyword}」の販売中の出品を集めています…")
-    on_sale_query = SearchQuery(
-        keyword=plan.keyword,
-        exclude=plan.exclude,
-        price_min=plan.min_price if plan.min_price is not None else SCAN_DEFAULT_MIN_PRICE,
-        price_max=plan.max_price,
-        conditions=conditions,
-        pages=plan.pages,
-    )
-    on_sale = _collect(active, on_sale_query, errors, "販売中")
+    on_sale: list[Listing] = []
+    seen: set[str] = set()
+    for keyword in plan.keywords:
+        progress(f"「{keyword}」の販売中の出品を集めています…")
+        on_sale_query = SearchQuery(
+            keyword=keyword,
+            exclude=plan.exclude,
+            price_min=plan.min_price if plan.min_price is not None else SCAN_DEFAULT_MIN_PRICE,
+            price_max=plan.max_price,
+            conditions=conditions,
+            pages=plan.pages,
+        )
+        what = "販売中" if len(plan.keywords) == 1 else f"販売中「{keyword}」"
+        for listing in _collect(active, on_sale_query, errors, what):
+            if listing.key not in seen:  # 複数のキーワードで同じ出品が見つかることがある
+                seen.add(listing.key)
+                on_sale.append(listing)
 
     skipped: Counter[str] = Counter()
     cards: dict[str, list[Listing]] = {}
+    guessed: set[str] = set()  # タイトルからは分からず、推測したカードとして比べる出品
     for listing in on_sale:
         reason = "売り切れ・取引中" if listing.sold else profile.exclusion_reason(listing.title, query_tokens)
         key = None if reason else profile.card_key(listing.title)
+        if key is None and not reason and profile.guess_card_key is not None:
+            key = profile.guess_card_key(listing.title, query_tokens)
+            if key is not None:
+                guessed.add(listing.key)
         if reason or key is None:
             skipped[reason or profile.missing_card_reason(listing.title)] += 1
             continue
@@ -305,6 +328,7 @@ def run_scan(
             except FetchError as exc:
                 errors.append(f"{source.label}（売り切れ {key}）: {exc}")
                 sold_sources.remove(source)  # 同じエラーを繰り返さない
+        # 相場は、どのカードかタイトルから分かる売り切れだけで出す（推測は販売中の出品にだけ使う）
         same_card = [listing for listing in sold if profile.card_key(listing.title) == key]
         markets[key] = estimate_market(
             same_card,
@@ -322,7 +346,10 @@ def run_scan(
 
     def score_all() -> list[Evaluation]:
         return [
-            evaluate(listing, markets[key], query_tokens, settings, now, profile)
+            evaluate(
+                listing, markets[key], query_tokens, settings, now, profile,
+                assumed=key if listing.key in guessed else None,
+            )
             for key, listings in targets
             if key in markets
             for listing in listings

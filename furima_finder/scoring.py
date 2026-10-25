@@ -66,6 +66,7 @@ STRONG_RISK_PENALTY = 30
 MILD_RISK_PENALTY = 12
 DESCRIPTION_RISK_PENALTY = 15  # 説明文に「折れ」「水濡れ」「ジャンク」など重い注意ワード
 AUCTION_PENALTY = 20  # 表示価格は途中の入札額で、最終的には相場近くまで上がりやすい
+GUESS_PENALTY = 10  # タイトルからどのカードか推測しただけ（写真で確認が必要）
 POPULAR_LIKES = 20
 
 
@@ -103,6 +104,8 @@ class Evaluation:
     trend: float | None = None
     long_trend: float | None = None
     era: Era | None = None  # カードの年代（ポケカのみ）
+    # タイトルに書かれていないため推測したカード（例「旧裏 リザードン」）。写真で確認が必要
+    assumed_card: str | None = None
 
     @property
     def recommended(self) -> bool:
@@ -306,8 +309,11 @@ def evaluate(
     settings: Settings,
     now: datetime,
     profile: Profile = DEFAULT,
+    *,
+    assumed: str | None = None,
 ) -> Evaluation:
-    result = Evaluation(listing=listing)
+    """assumed: タイトルからは分からず推測したカード（例「旧裏 リザードン」）。減点し、写真で確認するよう注意を出す。"""
+    result = Evaluation(listing=listing, assumed_card=assumed)
     result.effective_price = effective_price(listing, settings.buyer_shipping)
     result.match = text.match_ratio(query_tokens, listing.title)
     if listing.sold:
@@ -408,6 +414,11 @@ def evaluate(
         result.warnings.append(listing.caution)
     if listing.likes is not None and listing.likes >= POPULAR_LIKES:
         result.warnings.append(f"いいね{listing.likes}件（人気で売れやすい・早めの判断を）")
+    if assumed:
+        points -= GUESS_PENALTY
+        result.warnings.insert(
+            0, f"タイトルからは分からないため「{assumed}」とみなして比べています：写真で本当にそのカードか必ず確認"
+        )
 
     result.score = max(0, min(100, points))
     if resale:

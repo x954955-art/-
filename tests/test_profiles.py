@@ -9,6 +9,7 @@ from furima_finder.profiles import (
     old_card_name,
     pokeca_card_key,
     pokeca_group,
+    pokeca_guess_key,
     pokeca_rarity,
 )
 
@@ -16,6 +17,7 @@ from .conftest import make_listing
 
 CARD_QUERY = text.tokens("ポケモンカード SAR")
 BOX_QUERY = text.tokens("151 BOX シュリンク付き")
+OLD_QUERY = text.tokens("ポケモンカード 昔")
 
 
 @pytest.mark.parametrize(
@@ -87,10 +89,42 @@ def test_card_key(title, key):
         ("旧裏 ブースターパック", None),
         ("旧裏 オーキド博士", None),
         ("旧裏 ナナミのピカチュウ", None),  # 知らない「〇〇の」は別のカードかもしれない
+        ("旧裏 リザードンです", "リザードン"),  # 名前のすぐ後のひらがなは名前の一部ではない
+        ("旧裏 ワルイリザードン", "わるいリザードン"),  # 正規化された検索語でも同じ名前になる
     ],
 )
 def test_old_card_name(title, name):
     assert old_card_name(title) == name
+
+
+@pytest.mark.parametrize(
+    "title, query, key",
+    [
+        ("昔のポケモンカード リザードン キラ", OLD_QUERY, "旧裏 リザードン"),
+        ("当時物 ポケモンカード カメックス", OLD_QUERY, "旧裏 カメックス"),
+        ("実家から出てきた ポケモンカード ギャラドス", OLD_QUERY, "旧裏 ギャラドス"),
+        ("1999年 ポケモンカード ミュウツー", OLD_QUERY, "旧裏 ミュウツー"),
+        ("昔のポケモンカード ピカチュウ プロモ", OLD_QUERY, "旧裏 ピカチュウ プロモ"),
+        ("ポケモンカード リザードン", OLD_QUERY, None),  # 古いと分かる言葉がない
+        ("ポケモンカード ミュウツー 1999円", OLD_QUERY, None),  # 値段の 1999 は年ではない
+        ("初期傷あり リザードン", OLD_QUERY, None),  # 「初期傷」は古さとは関係ない
+        ("昔のポケモンカード リザードンex", OLD_QUERY, None),  # ex は旧裏より後の種類
+        ("昔のポケモンカード リザードンV", OLD_QUERY, None),
+        ("昔のポケモンカード ピカチュウ SR", OLD_QUERY, None),
+        ("昔のポケモンカード リザードン sv2a", OLD_QUERY, None),  # 弾の記号から新しいカード
+        ("昔のポケモンカード リザードン カメックス", OLD_QUERY, None),  # 2種類以上
+        ("昔のポケモンカード 未開封パック リザードン", OLD_QUERY, None),
+        ("昔のポケモンカード リザードン", CARD_QUERY, None),  # 古いカードを探していないときは推測しない
+    ],
+)
+def test_guess_old_back_cards_from_layman_titles(title, query, key):
+    assert pokeca_guess_key(title, query) == key
+
+
+def test_layman_old_cards_are_compared_as_cards():
+    # 「昔の」「当時物」とポケモンの名前があればカード（BOX などではない）として相場の種類を決める
+    assert pokeca_group("昔のポケモンカード リザードン キラ", None) == "raw"
+    assert POKECA.missing_card_reason("昔のポケモンカード オーキド博士") == "カード名を特定できない"
 
 
 def test_rarity():

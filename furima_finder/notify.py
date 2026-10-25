@@ -21,6 +21,8 @@ def format_message(keyword: str, evaluations: list[Evaluation], *, title: str = 
         else:
             summary = f"{yen(listing.price)}（相場比 -{max(evaluation.discount, 0):.0%}）"
         details = [listing.condition_label or "", "送料込み" if listing.shipping_included else ""]
+        if evaluation.assumed_card:
+            details.append(f"※写真で確認（{evaluation.assumed_card}とみなした）")
         detail = " / ".join(d for d in details if d)
         lines.append(
             f"・{evaluation.score}点 {summary}"

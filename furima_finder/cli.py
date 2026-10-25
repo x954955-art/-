@@ -190,9 +190,11 @@ def _coerce_entry(entry: Any, where: str) -> dict[str, Any]:
     for key, value in entry.items():
         name = key.replace("-", "_")
         if name == "keyword":
-            if not isinstance(value, str) or not value.strip():
+            # 1つなら "…"、まとめて探すなら ["…", "…"]
+            words = value if isinstance(value, list) else [value]
+            if not words or not all(isinstance(word, str) and word.strip() for word in words):
                 raise ConfigError(f"{where}: keyword が空です")
-            values["keyword"] = value.strip()
+            values["keyword"] = [word.strip() for word in words] if isinstance(value, list) else value.strip()
             continue
         if name not in COERCE:
             raise ConfigError(f"{where}: 不明な項目「{key}」があります")
@@ -233,7 +235,7 @@ def load_config(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     return defaults, searches
 
 
-def make_plan(values: Mapping[str, Any]) -> SearchPlan:
+def make_plan(values: Mapping[str, Any], keywords: list[str]) -> SearchPlan:
     settings = Settings(
         min_discount=values["min_discount"],
         min_match=values["min_match"],
@@ -247,7 +249,8 @@ def make_plan(values: Mapping[str, Any]) -> SearchPlan:
         min_sales=values["min_sales"],
     )
     return SearchPlan(
-        keyword=values["keyword"],
+        keyword=keywords[0],
+        extra_keywords=list(keywords[1:]),
         exclude=list(values["exclude"]),
         min_price=values["min_price"] or None,
         max_price=values["max_price"] or None,
@@ -283,7 +286,11 @@ def build_plans(args: argparse.Namespace) -> list[SearchPlan]:
         values["exclude"] = list(
             dict.fromkeys(defaults.get("exclude", []) + entry.get("exclude", []) + cli.get("exclude", []))
         )
-        plans.append(make_plan(values))
+        keywords = values["keyword"] if isinstance(values["keyword"], list) else [values["keyword"]]
+        if values["scan"]:
+            plans.append(make_plan(values, keywords))  # まとめて1回のスキャンにする
+        else:
+            plans.extend(make_plan(values, [keyword]) for keyword in keywords)
     return plans
 
 
@@ -474,13 +481,13 @@ def _watch(
             if first:
                 for result in results:
                     print_result(result, out, top=args.top, color=color)
-                    _notify(args.webhook, "【フリマおすすめ】", result.plan.keyword, result.recommendations[:3], progress)
+                    _notify(args.webhook, "【フリマおすすめ】", result.plan.label, result.recommendations[:3], progress)
                 progress(f"監視を始めました。{minutes:g}分ごとに検索し直し、新しく見つかった候補だけを表示します（Ctrl+C で終了）")
             else:
                 found = 0
                 for result in results:
                     for error in result.errors:
-                        progress(f"取得エラー（{result.plan.keyword}）: {error}")
+                        progress(f"取得エラー（{result.plan.label}）: {error}")
                     fresh = [
                         (rank, evaluation)
                         for rank, evaluation in enumerate(result.recommendations, 1)
@@ -489,13 +496,13 @@ def _watch(
                     if not fresh:
                         continue
                     found += len(fresh)
-                    out.write(f"■ 新着「{result.plan.keyword}」 {datetime.now(JST):%H:%M}\n")
+                    out.write(f"■ 新着「{result.plan.label}」 {datetime.now(JST):%H:%M}\n")
                     for rank, evaluation in fresh:
                         for line in item_lines(rank, evaluation):
                             out.write(f"  {line}\n")
                         out.write("\n")
                     out.flush()
-                    _notify(args.webhook, "【フリマ新着おすすめ】", result.plan.keyword, [e for _, e in fresh], progress)
+                    _notify(args.webhook, "【フリマ新着おすすめ】", result.plan.label, [e for _, e in fresh], progress)
                 if not found:
                     progress(f"{datetime.now(JST):%H:%M} 新着の候補はありませんでした")
             for result in results:
@@ -552,7 +559,7 @@ def main(
         return 130
     for result in results:
         print_result(result, stdout, top=args.top, color=color)
-        _notify(args.webhook, "【フリマおすすめ】", result.plan.keyword, result.recommendations[:5], progress)
+        _notify(args.webhook, "【フリマおすすめ】", result.plan.label, result.recommendations[:5], progress)
     stdout.flush()
     _save_files(results, args, progress, open_browser=args.open)
     if any(result.fetch_failed for result in results):

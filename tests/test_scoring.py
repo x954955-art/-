@@ -307,6 +307,21 @@ def test_damage_is_not_discounted_twice_when_most_sales_are_worn(now):
     assert better.expected_sale == 10000  # 状態が良くても相場より高くは見積もらない
 
 
+def test_assumed_cards_are_penalized_and_flagged(now):
+    market = card_market(era=ERAS["kyuura"])
+    sure = resale_ev(make_listing("旧裏 リザードン", 6000), now, market, tokens=OLD_TOKENS)
+    guess = evaluate(
+        make_listing("昔のポケモンカード リザードン", 6000), market, text.tokens("ポケモンカード 昔"),
+        RESALE, now, POKECA, assumed="旧裏 リザードン",
+    )
+    assert guess.recommended and guess.assumed_card == "旧裏 リザードン"
+    assert sure.score - guess.score == 10
+    assert guess.warnings[0] == (
+        "タイトルからは分からないため「旧裏 リザードン」とみなして比べています：写真で本当にそのカードか必ず確認"
+    )
+    assert sure.assumed_card is None
+
+
 def test_very_cheap_old_cards_warn_about_copies(now):
     result = resale_ev(make_listing("旧裏 リザードン", 3000), now, tokens=OLD_TOKENS)
     assert any("相場の半額以下" in w and "コピー品" in w for w in result.warnings)

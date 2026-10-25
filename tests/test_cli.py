@@ -181,6 +181,8 @@ def test_config_file_precedence(tmp_path):
         ('[defaults]\nkeyword = "a"\n', "[defaults] には keyword を書けません"),
         ("[[search]\n", "書式が正しくありません"),
         ('[other]\nx = 1\n', "不明な項目があります: other"),
+        ('[[search]]\nkeyword = []\n', "keyword が空です"),
+        ('[[search]]\nkeyword = ["a", 1]\n', "keyword が空です"),
     ],
 )
 def test_config_errors(tmp_path, content, message):
@@ -282,6 +284,53 @@ def test_profile_from_config_file(tmp_path):
     (plan,) = plans_for([], tmp_path, config)
     assert (plan.profile, plan.scan, plan.scan_cards) == ("pokeca", True, 30)
     assert plan.settings.min_profit == 1500  # [defaults] はプロファイルの既定値より優先
+
+
+def test_keyword_lists_in_config(tmp_path):
+    config = (
+        '[defaults]\nprofile = "pokeca"\n\n'
+        '[[search]]\nkeyword = ["ポケモンカード 旧裏", "ポケモンカード 昔"]\nscan = true\n\n'
+        '[[search]]\nkeyword = ["リザードンex SAR 201/165", "ナンジャモ SAR 096/071"]\n'
+    )
+    plans = plans_for([], tmp_path, config)
+    # スキャンはまとめて1回、スキャン以外はキーワードごとに別々の検索
+    assert [plan.label for plan in plans] == [
+        "ポケモンカード 旧裏 / ポケモンカード 昔", "リザードンex SAR 201/165", "ナンジャモ SAR 096/071",
+    ]
+    assert plans[0].scan and plans[0].keywords == ["ポケモンカード 旧裏", "ポケモンカード 昔"]
+    assert plans[1].extra_keywords == []
+
+
+def test_layman_listing_is_flagged_for_photo_check(tmp_path):
+    from datetime import timedelta
+
+    from .conftest import make_listing as listing
+
+    on_sale = [listing("昔のポケモンカード リザードン キラ", 4000, id="m7", condition=3, age=timedelta(hours=1))]
+    sold = [listing(f"旧裏 リザードン {i}", 10000, sold=True, condition=3) for i in range(6)]
+    sources = {"mercari": FakeSource(sold=sold, on_sale=on_sale)}
+    config = tmp_path / "c.toml"
+    config.write_text(
+        '[defaults]\nprofile = "pokeca"\ndetails = 0\n\n'
+        '[[search]]\nkeyword = ["ポケモンカード 旧裏", "ポケモンカード 昔"]\nscan = true\n',
+        encoding="utf-8",
+    )
+    html_path, csv_path, json_path = tmp_path / "r.html", tmp_path / "r.csv", tmp_path / "r.json"
+    code, out, err = run(
+        ["--config", str(config), "--no-color", "--html", str(html_path), "--csv", str(csv_path), "--json", str(json_path)],
+        sources=sources,
+    )
+    assert code == 0
+    assert "■「ポケモンカード 旧裏 / ポケモンカード 昔」のスキャン" in out
+    assert "※写真で確認" in out
+    assert "「旧裏 リザードン」とみなして比べています" in out
+    assert "「ポケモンカード 昔」の販売中の出品を集めています" in err
+    assert '<span class="chip check">写真で確認</span>' in html_path.read_text(encoding="utf-8")
+    rows = list(csv.reader(io.StringIO(csv_path.read_bytes().decode("utf-8-sig"))))
+    assert rows[1][rows[0].index("写真で確認（みなしたカード）")] == "旧裏 リザードン"
+    assert rows[1][rows[0].index("キーワード")] == "ポケモンカード 旧裏 / ポケモンカード 昔"
+    recommendation = json.loads(json_path.read_text(encoding="utf-8"))[0]["recommendations"][0]
+    assert recommendation["assumed_card"] == "旧裏 リザードン"
 
 
 def test_scan_requires_a_card_profile(capsys):

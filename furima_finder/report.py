@@ -111,6 +111,8 @@ def item_lines(rank: int, evaluation: Evaluation) -> list[str]:
     else:
         head += f"{price}  相場比 {_pct(evaluation.discount)}"
     head += f"  [{listing.source_label}]"
+    if evaluation.assumed_card:
+        head += "  ※写真で確認"
     lines = [head, f"    {listing.title}"]
     reasons = [reason for reason in evaluation.reasons if reason]
     if reasons:
@@ -131,7 +133,7 @@ class _Style:
 
 def print_result(result: SearchResult, out: TextIO, *, top: int, color: bool) -> None:
     style = _Style(color)
-    title = f"■「{result.plan.keyword}」" + ("のスキャン" if result.plan.scan else "")
+    title = f"■「{result.plan.label}」" + ("のスキャン" if result.plan.scan else "")
     out.write(style(title, "1") + f"  {_jst(result.searched_at)} 時点\n")
     for line in market_lines(result.market, fetch_failed=result.fetch_failed):
         out.write(f"  {line}\n")
@@ -164,7 +166,7 @@ def print_result(result: SearchResult, out: TextIO, *, top: int, color: bool) ->
 CSV_COLUMNS = [
     "キーワード", "順位", "スコア", "サイト", "商品名", "価格", "実質価格", "比較した相場", "相場からの割引率(%)",
     "売値の目安", "利益", "利益率(%)", "直近30日の販売数", "相場の動き(%)", "長期の値動き(%)", "年代",
-    "状態", "送料", "出品日時", "オークション終了日時", "理由", "注意", "URL",
+    "写真で確認（みなしたカード）", "状態", "送料", "出品日時", "オークション終了日時", "理由", "注意", "URL",
 ]
 
 
@@ -182,12 +184,13 @@ def write_csv(results: list[SearchResult], path: Path) -> None:
                 listing = evaluation.listing
                 shipping = {True: "送料込み", False: "着払い", None: ""}[listing.shipping_included]
                 writer.writerow([
-                    result.plan.keyword, rank, evaluation.score, listing.source_label, listing.title,
+                    result.plan.label, rank, evaluation.score, listing.source_label, listing.title,
                     listing.price, evaluation.effective_price, evaluation.reference_price,
                     round(evaluation.discount * 100, 1), _optional(evaluation.expected_sale),
                     _optional(evaluation.profit), _optional(evaluation.roi, 100), _optional(evaluation.sales_30d),
                     _optional(evaluation.trend, 100), _optional(evaluation.long_trend, 100),
-                    evaluation.era.label if evaluation.era else "", listing.condition_label or "", shipping,
+                    evaluation.era.label if evaluation.era else "", evaluation.assumed_card or "",
+                    listing.condition_label or "", shipping,
                     _jst(listing.created_at), _jst(listing.auction_end) if listing.is_auction else "",
                     " / ".join(r for r in evaluation.reasons if r),
                     " / ".join(evaluation.warnings), listing.url,
@@ -224,6 +227,7 @@ def _evaluation_json(evaluation: Evaluation) -> dict:
         "trend": None if evaluation.trend is None else round(evaluation.trend, 4),
         "long_trend": None if evaluation.long_trend is None else round(evaluation.long_trend, 4),
         "era": evaluation.era.label if evaluation.era else None,
+        "assumed_card": evaluation.assumed_card,
     }
 
 
@@ -245,7 +249,7 @@ def _market_json(market: MarketStats) -> dict:
 def write_json(results: list[SearchResult], path: Path) -> None:
     payload = [
         {
-            "keyword": result.plan.keyword,
+            "keyword": result.plan.label,
             "searched_at": result.searched_at.isoformat(),
             "market": _market_json(result.market),
             "checked": result.checked,
@@ -307,6 +311,7 @@ h2 { font-size: 19px; margin: 32px 0 6px; }
 .price small { font-size: 12px; font-weight: 400; color: var(--muted); }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chip { background: var(--chip); border-radius: 999px; padding: 1px 8px; font-size: 12px; }
+.chip.check { background: var(--warn-bg); color: var(--warn); font-weight: 700; }
 .reasons { font-size: 13px; color: var(--good); margin: 0; padding-left: 18px; }
 .warnings { font-size: 13px; color: var(--warn); background: var(--warn-bg); border-radius: 8px; margin: 0; padding: 4px 8px 4px 22px; }
 .open { margin-top: auto; text-align: center; background: var(--text); color: var(--bg); border-radius: 8px; padding: 6px; text-decoration: none; font-weight: 600; }
@@ -367,6 +372,8 @@ def _card(evaluation: Evaluation) -> str:
     created = listing.created_at.timestamp() if listing.created_at else 0
     # 長期の値動きが分からないものは「値上がり傾向順」で最後にする
     long_trend = evaluation.long_trend if evaluation.long_trend is not None else -9
+    # タイトルからは分からず推測したカードは、写真で確かめる必要があることを目立たせる
+    check = '<span class="chip check">写真で確認</span>' if evaluation.assumed_card else ""
     return f"""
 <article class="card" data-score="{evaluation.score}" data-discount="{evaluation.discount:.4f}"
   data-profit="{evaluation.profit or 0}" data-roi="{evaluation.roi or 0:.4f}"
@@ -376,7 +383,7 @@ def _card(evaluation: Evaluation) -> str:
     <div class="title">{e(listing.title)}</div>
     <div class="price">{"<small>現在の入札</small> " if listing.is_auction else ""}{e(yen(listing.price))}{effective}</div>
     <div class="muted">{e(summary)}</div>
-    <div class="chips">{''.join(f'<span class="chip">{e(c)}</span>' for c in chips)}</div>
+    <div class="chips">{check}{''.join(f'<span class="chip">{e(c)}</span>' for c in chips)}</div>
     {f'<ul class="reasons">{reasons}</ul>' if reasons else ''}
     {f'<ul class="warnings">{warnings}</ul>' if warnings else ''}
     <a class="open" href="{e(listing.url)}" target="_blank" rel="noopener noreferrer">商品ページを開く</a>
@@ -416,7 +423,7 @@ def render_html(results: list[SearchResult], *, top: int, generated_at: datetime
             if cards
             else f'<p class="empty">{e(empty_message(result))}</p>'
         )
-        title = f"「{result.plan.keyword}」" + ("のスキャン" if result.plan.scan else "")
+        title = f"「{result.plan.label}」" + ("のスキャン" if result.plan.scan else "")
         sections.append(
             f"""<section><h2>{e(title)}</h2>
 <div class="market">{info}</div>{body}</section>"""
