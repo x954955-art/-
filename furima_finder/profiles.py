@@ -4,6 +4,8 @@
 - pokeca : ポケモンカード向け。鑑定（PSA10 など）・初版・BOX のシュリンク有無で相場を分け、
            オリパ・偽物の可能性・海外版・まとめ売り・サプライ品を除外する。転売目線が既定。
            年代（旧裏〜MEGA）も推定し、カード番号のない旧裏はポケモンの名前でカードを見分ける。
+- onepiece: ワンピースカード向け。カード番号（OP01-120 など）とパラレル・スーパーパラレル（コミパラ）・
+           SP・TR の違いでカードを見分け、鑑定と BOX のテープ有無で相場を分ける。転売目線が既定。
 """
 
 from __future__ import annotations
@@ -48,6 +50,8 @@ class Profile:
     unknown_card_reason: Callable[[str], str] | None = None
     # スキャン用: card_key で分からないとき、タイトルと検索語からカードを推測する（写真で確認が必要）
     guess_card_key: Callable[[str, list[str]], str | None] | None = None
+    # スキャン用: カード（card_key）とその出品のタイトルから、売り切れを探すキーワードを決める
+    sold_keyword: Callable[[str, list[str]], str] | None = None
 
     def group(self, listing: Listing) -> str | None:
         return self.group_of(listing.title, listing.condition)
@@ -401,8 +405,149 @@ POKECA = Profile(
 )
 
 
-PROFILES = {"default": DEFAULT, "pokeca": POKECA}
-ALIASES = {"一般": "default", "pokemon": "pokeca", "ポケカ": "pokeca", "ポケモンカード": "pokeca"}
+# ---------------------------------------------------------------- ワンピースカード
+
+# カード番号: OP01-120（ブースター）・ST10-013（スタートデッキ）・EB01-061・PRB01-001、プロモは P-001
+_OP_NUMBER = _p(r"(?<![a-z0-9])(op|st|eb|prb)\s*-?\s*(\d{1,2})(?:\s*[-‐−–ー]\s*|\s+)(\d{3})(?!\d)")
+_OP_PROMO_NUMBER = _p(r"(?<![a-z0-9])p\s*[-‐−–ー]\s*(\d{3})(?!\d)")
+# 同じカード番号でも絵柄や加工が違うと値段が大きく違うので、別のカードとして相場を調べる（上から順に判定）
+_OP_VERSIONS = {
+    "スーパーパラレル": _p(r"スーパーパラ(レル)?|コミパラ|コミックパラ(レル)?|(マンガ|漫画)(背景|柄|レア|版)"),
+    "TR": _p(r"(?<![a-z])tr(?![a-z])|トレジャーレア"),
+    "SP": _p(r"(?<![a-z])sp(?![a-z])|スペシャルカード"),
+    # 「パラレルではありません」「非パラ」「パラなし」は通常版
+    "パラレル": _p(r"パラレル(?!\s*(では|じゃ|で(は)?な|なし|無し))|(?<![ァ-ヺー非])パラ(?![ァ-ヺー])"),
+}
+_OP_CARD_HINT = _p(r"(?<![a-z])(sec|sr|sp|tr)(?![a-z])|シークレット|パラレル|コミパラ|スーパーパラ|リーダー|プロモ")
+_OP_BOX = _p(r"(?<![a-z])box(?![a-z])|ボックス|箱|カートン")
+_TAPE_NO = _p(r"テープ\s*(なし|無し|無)|テープ\s*(剥がれ|はがれ|破れ)|開封済")
+_TAPE_YES = _p(r"テープ\s*(付|つき|あり|有)")
+
+ONEPIECE_GROUPS = {
+    "raw": "未鑑定",
+    "psa10": "PSA10",
+    "psa9": "PSA9",
+    "graded": "鑑定品（その他）",
+    "box_tape": "BOX（テープ付き）",
+    "box_notape": "BOX（テープなし）",
+    "box": "BOX（テープ不明）",
+    "other": "カード以外",
+}
+ONEPIECE_BOX_GROUPS = frozenset({"box_tape", "box_notape", "box", "other"})
+
+
+def _op_version(normalized: str) -> str | None:
+    return next((name for name, pattern in _OP_VERSIONS.items() if pattern.search(normalized)), None)
+
+
+def onepiece_card_key(title: str) -> str | None:
+    """どのカードか: カード番号（例: OP01-120, P-001）と、パラレル・スーパーパラレル・SP・TR の違い
+    （例: OP01-120 パラレル）。番号が書かれていなければ None。"""
+    normalized = text.normalize(title)
+    match = _OP_NUMBER.search(normalized)
+    if match:
+        series, set_number, card_number = match.groups()
+        key = f"{series.upper()}{int(set_number):02d}-{card_number}"
+    else:
+        promo = _OP_PROMO_NUMBER.search(normalized)
+        if promo is None:
+            return None
+        key = f"P-{promo.group(1)}"
+    version = _op_version(normalized)
+    return f"{key} {version}" if version else key
+
+
+def onepiece_sold_keyword(key: str, titles: list[str]) -> str:
+    """売り切れを探すキーワード。種類は出品でいちばん多い書き方にする（「コミパラ」と「スーパーパラレル」など）。"""
+    number, _, version = key.partition(" ")
+    if not version:
+        return number
+    pattern = _OP_VERSIONS[version]
+    words = Counter(match.group() for title in titles if (match := pattern.search(text.normalize(title))))
+    if not words:
+        return key
+    word = words.most_common(1)[0][0]
+    return f"{number} {word.upper() if word.isascii() else word}"  # 正規化で小文字になった「sp」は「SP」に戻す
+
+
+def _op_looks_like_card(normalized: str) -> bool:
+    return bool(
+        _OP_NUMBER.search(normalized)
+        or _OP_PROMO_NUMBER.search(normalized)
+        or _OP_CARD_HINT.search(normalized)
+        or _GRADED.search(normalized)
+    )
+
+
+def _op_looks_like_box(normalized: str) -> bool:
+    return bool(_OP_BOX.search(normalized) or _PACK.search(normalized))
+
+
+def onepiece_group(title: str, condition: int | None) -> str:
+    normalized = text.normalize(title)
+    if _op_looks_like_card(normalized):
+        return _grade(normalized)
+    if _OP_BOX.search(normalized):
+        if _TAPE_NO.search(normalized):
+            return "box_notape"
+        if _TAPE_YES.search(normalized):
+            return "box_tape"
+        return "box"
+    return "other"
+
+
+def _onepiece_kind_mismatch(title: str, query_tokens: list[str]) -> str | None:
+    """カードを探しているのにBOXやサプライ品、BOXを探しているのに単品カード、
+    カード番号を指定しているのに別のカード（パラレルと通常版の違いも含む）、を外す。"""
+    query = " ".join(query_tokens)
+    normalized = text.normalize(title)
+    if _op_looks_like_box(query):
+        return "単品カード" if _op_looks_like_card(normalized) else None
+    if _op_looks_like_card(query) and not _op_looks_like_card(normalized):
+        return "BOX・パック" if _op_looks_like_box(normalized) else "カード以外・カードを特定できない"
+    wanted = onepiece_card_key(query)
+    if wanted is not None:
+        key = onepiece_card_key(title)
+        if key is not None and key != wanted:
+            return "別のカード"
+    return None
+
+
+ONEPIECE_RULES = POKECA_RULES + (
+    _rule(r"アジア版|(?<![a-z])asia(?![a-z])", "海外版", "アジア"),
+    _rule(r"カートン", "まとめ売り・セット", "カートン"),
+    _rule(r"ドン\s*!!|ドン\s*カード|(?<![a-z])don\s*!!", "ドン!!カード", "ドン"),
+)
+
+ONEPIECE = Profile(
+    name="onepiece",
+    label="ワンピースカード",
+    group_of=onepiece_group,
+    group_labels=ONEPIECE_GROUPS,
+    strict_groups=True,
+    exclusion_rules=ONEPIECE_RULES,
+    extra_exclusion=_onepiece_kind_mismatch,
+    strong_risk_words=POKECA.strong_risk_words + ("テープ剥がれ", "テープはがれ", "テープ破れ"),
+    mild_risk_words=POKECA.mild_risk_words,
+    defaults=dict(POKECA.defaults),
+    card_key=onepiece_card_key,
+    large_groups=ONEPIECE_BOX_GROUPS,
+    large_shipping=520,
+    sold_keyword=onepiece_sold_keyword,
+)
+
+
+PROFILES = {"default": DEFAULT, "pokeca": POKECA, "onepiece": ONEPIECE}
+ALIASES = {
+    "一般": "default",
+    "pokemon": "pokeca",
+    "ポケカ": "pokeca",
+    "ポケモンカード": "pokeca",
+    "one_piece": "onepiece",
+    "ワンピース": "onepiece",
+    "ワンピースカード": "onepiece",
+    "ワンピカ": "onepiece",
+}
 
 
 def get_profile(name: str) -> Profile:

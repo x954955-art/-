@@ -245,6 +245,8 @@ def run_search(
 
 def card_query(key: str, listings: list[Listing], profile: Profile) -> str:
     """カードの売り切れを探すキーワード（カード番号＋よく書かれているレアリティ。旧裏はカード名のまま）。"""
+    if profile.sold_keyword is not None:
+        return profile.sold_keyword(key, [listing.title for listing in listings])
     if "/" not in key:
         return key
     rarity = most_common_rarity(profile, (listing.title for listing in listings))
