@@ -306,6 +306,38 @@ def test_scan_finds_old_back_cards_by_name(now):
     assert result.excluded["まとめ売り・セット"] == 1
 
 
+def test_scan_finds_ecards_by_number_or_name(now):
+    on_sale = [
+        card("ポケモンカードe リザードン キラ 006/128", 9000, id="numbered", age=timedelta(hours=1)),
+        card("ポケモンカードe リザードン 1ED キラ 006/128", 20000, id="first", age=timedelta(hours=2)),
+        card("eカード ルギア キラ", 4000, id="lugia", age=timedelta(hours=3)),
+        card("ポケモンカードe 神秘なる山 リザードン クリスタルタイプ", 30000, id="crystal", age=timedelta(hours=4)),
+    ]
+    sold = {
+        # 番号のあるものは「番号＋いちばん多い書き方」で探す
+        "006/128 ポケモンカードe": [card(f"ポケモンカードe リザードン キラ 006/128 {i}", 15000, sold=True) for i in range(5)]
+        + [card(f"ポケモンカードe リザードン 1ED キラ 006/128 {i}", 40000, sold=True) for i in range(4)]
+        + [card("リザードン AR 006/128", 800, sold=True)],  # eカードと書かれていない同じ番号のカードは混ぜない
+        "eカード ルギア": [card(f"eカード ルギア キラ {i}", 8000, sold=True) for i in range(5)],
+        "ポケモンカードe リザードン クリスタル": [
+            card(f"ポケモンカードe リザードン クリスタルタイプ {i}", 60000, sold=True) for i in range(5)
+        ],
+    }
+    source = KeywordSource(sold, on_sale=on_sale)
+    plan = SearchPlan(keyword="ポケモンカードe", profile="pokeca", scan=True, details=0, settings=POKECA_SETTINGS)
+    result = run_scan(plan, {"mercari": source}, now=now)
+
+    assert [q.keyword for q in source.queries if q.sold] == [
+        "006/128 ポケモンカードe", "eカード ルギア", "ポケモンカードe リザードン クリスタル",
+    ]
+    by_id = {e.listing.id: e for e in result.recommendations}
+    assert by_id["numbered"].expected_sale == 15000
+    assert by_id["first"].expected_sale == 40000  # 1ED は 1ED の相場
+    assert by_id["lugia"].expected_sale == 8000
+    assert by_id["crystal"].expected_sale == 60000  # クリスタルタイプは別の相場
+    assert by_id["numbered"].era.key == "e_pcg"
+
+
 def test_scan_several_keywords_and_layman_titles(now):
     sure = card("旧裏 リザードン LV.76", 7000, id="sure", age=timedelta(hours=1))
     layman = card("昔のポケモンカード リザードン キラキラ", 4000, id="layman", age=timedelta(hours=2))

@@ -172,6 +172,16 @@ _OLD_GUESS = _p(
 )
 # 旧裏より後のカードにしかない種類（「昔のポケモンカード リザードンex」は旧裏ではない）
 _NEWER_KIND = _p(r"(?<![a-z])(ex|gx|vmax|vstar|vunion|break)(?![a-z])|[ァ-ヺー]v(?![a-z])")
+
+# ---- eカード（ポケモンカードe・2001〜2002年）。旧裏と同じく初代・金銀のポケモンだけが出てくる
+# 「ポケモンカード eカード」は「eカード」と書いたものとして数える（売り切れを探す言葉に使う）
+_ECARD_WORDS = (
+    r"ポケモンカード\s*e(?![a-z]|\s*カード)|ポケカ\s*e(?![a-z]|\s*カード)|(?<![a-z])e\s*カード|(?<![a-z])e-?card(?![a-z])"
+)
+_ECARD_WORD = _p(_ECARD_WORDS)
+# 「eカード」の言葉か、eカードの弾の名前・クリスタルタイプが書かれていればeカード
+_ECARD = _p(_ECARD_WORDS + r"|地図にない町|海からの風|裂けた大地|神秘なる山|基本拡張パック|クリスタルタイプ|カードeリーダー")
+_CRYSTAL = _p(r"クリスタル")
 # 1枚のカードではない商品（パック・BOX・サプライなど）。「拡張パック第1弾」はカードの弾の名前なので除く
 _NOT_SINGLE = _p(
     r"未開封|(?<![a-z])box(?![a-z])|ボックス|箱|(?<!拡張)パック|スターター|デッキ|ファイル|スリーブ"
@@ -237,9 +247,9 @@ def old_card_name(title: str) -> str | None:
 
 
 def _is_old_card(normalized: str, title: str) -> bool:
-    """カード番号のない古いカード（旧裏・初版・当時物・昔の などの手がかりと、ポケモンの名前がある）。"""
+    """カード番号のない古いカード（旧裏・eカード・初版・当時物・昔の などの手がかりと、ポケモンの名前がある）。"""
     return bool(
-        (_OLD_HINT.search(normalized) or _OLD_GUESS.search(normalized))
+        (_OLD_HINT.search(normalized) or _OLD_GUESS.search(normalized) or _ECARD.search(normalized))
         and not _NOT_SINGLE.search(normalized)
         and old_card_name(title)
     )
@@ -301,9 +311,19 @@ def pokeca_group(title: str, condition: int | None) -> str:
 
 def pokeca_card_key(title: str) -> str | None:
     """どのカードか。カード番号（例: 201/165, 001/SV-P）か、番号のない旧裏ならカード名
-    （例: 旧裏 わるいリザードン）。分からなければ None。"""
+    （例: 旧裏 わるいリザードン）。eカードは「eカード 006/128」、番号がなければ「eカード リザードン」。
+    分からなければ None。"""
     normalized = text.normalize(title)
     match = _CARD_NUMBER.search(normalized)
+    if _ECARD.search(normalized) and not _NOT_SINGLE.search(normalized):
+        # eカードは今のカードと番号が重なることがあるので「eカード」を付けて分ける
+        if match:
+            return f"eカード {match.group(1)}/{match.group(2).upper()}"
+        name = old_card_name(title)
+        if name is None:
+            return None
+        crystal = " クリスタル" if _CRYSTAL.search(normalized) else ""
+        return f"eカード {name}{crystal}" + (" プロモ" if _PROMO.search(normalized) else "")
     if match:
         return f"{match.group(1)}/{match.group(2)}".upper()
     if _KYUURA.search(normalized) and not _NOT_SINGLE.search(normalized):
@@ -336,13 +356,31 @@ def pokeca_guess_key(title: str, query_tokens: list[str]) -> str | None:
 
 def _pokeca_unknown_card(title: str) -> str:
     normalized = text.normalize(title)
-    old = _KYUURA.search(normalized) or _OLD_GUESS.search(normalized)
+    old = _KYUURA.search(normalized) or _OLD_GUESS.search(normalized) or _ECARD.search(normalized)
     return "カード名を特定できない" if old else "カード番号なし"
 
 
 def pokeca_rarity(title: str) -> str | None:
     match = _RARITY.search(text.normalize(title))
     return match.group(1).upper() if match else None
+
+
+def pokeca_sold_keyword(key: str, titles: list[str]) -> str:
+    """売り切れを探すキーワード。カード番号には出品によく書かれているレアリティを、eカードには出品で
+    いちばん多い書き方（「ポケモンカードe」「eカード」など）を足す。旧裏はカード名のまま。"""
+    if key.startswith("eカード "):
+        words = Counter(
+            re.sub(r"\s+", "", match.group())  # 「ポケモンカード e」と「ポケモンカードe」は同じ書き方
+            for title in titles
+            if (match := _ECARD_WORD.search(text.normalize(title)))
+        )
+        word = words.most_common(1)[0][0] if words else "ポケモンカードe"
+        rest = key.removeprefix("eカード ")
+        return f"{rest} {word}" if "/" in rest else f"{word} {rest}"
+    if "/" not in key:
+        return key
+    rarities = Counter(rarity for rarity in map(pokeca_rarity, titles) if rarity)
+    return f"{key} {rarities.most_common(1)[0][0]}" if rarities else key
 
 
 def _pokeca_kind_mismatch(title: str, query_tokens: list[str]) -> str | None:
@@ -414,6 +452,7 @@ POKECA = Profile(
     era_of=detect_era,
     unknown_card_reason=_pokeca_unknown_card,
     guess_card_key=pokeca_guess_key,
+    sold_keyword=pokeca_sold_keyword,
 )
 
 

@@ -65,10 +65,48 @@ def test_pokeca_groups(title, group):
         ("リザードン 初版", None),  # 「旧裏」と書かれていなければ名前では見分けない
         ("旧裏 拡張パック 未開封", None),
         ("旧裏 リザードン スリーブ", None),
+        # eカードは今のカードと番号が重ならないよう「eカード」を付け、番号がなければ名前で見分ける
+        ("ポケモンカードe リザードン 1ED キラ 006/128", "eカード 006/128"),
+        ("ポケモンカードe リザードン キラ", "eカード リザードン"),
+        ("eカード ルギア 1ED", "eカード ルギア"),
+        ("ポケモンカード eカード ピカチュウ プロモ", "eカード ピカチュウ プロモ"),
+        ("ポケモンカードe 神秘なる山 リザードン クリスタルタイプ", "eカード リザードン クリスタル"),
+        ("海からの風 ホウオウ キラ", "eカード ホウオウ"),  # 弾の名前でもeカードと分かる
+        ("e-card ミュウツー 1st edition", "eカード ミュウツー"),
+        ("ポケモンカードe 基本拡張パック 未開封 BOX", None),
+        ("ポケモンカードe オーキド博士のパソコン", None),  # ポケモンの名前がない
+        ("ポケモンカード ex リザードン", None),  # 「ex」はeカードではない
     ],
 )
 def test_card_key(title, key):
     assert pokeca_card_key(title) == key
+
+
+def test_ecard_groups_and_sold_keywords():
+    from furima_finder.eras import ERAS, detect_era
+    from furima_finder.profiles import pokeca_sold_keyword
+
+    assert pokeca_group("ポケモンカードe リザードン 1ED キラ 006/128", None) == "raw_1ed"
+    assert pokeca_group("ポケモンカードe リザードン キラ", None) == "raw"
+    assert detect_era(["海からの風 ホウオウ キラ"]) is ERAS["e_pcg"]
+    assert POKECA.missing_card_reason("ポケモンカードe オーキド博士のパソコン") == "カード名を特定できない"
+    # 売り切れは、出品でいちばん多い「eカード」の書き方を足して探す
+    titles = ["ポケモンカードe リザードン 006/128", "ポケモンカードe 006/128", "eカード リザードン 006/128"]
+    assert pokeca_sold_keyword("eカード 006/128", titles) == "006/128 ポケモンカードe"
+    assert pokeca_sold_keyword("eカード リザードン クリスタル", ["eカード リザードン クリスタルタイプ"]) == (
+        "eカード リザードン クリスタル"
+    )
+    assert pokeca_sold_keyword("eカード ルギア", ["神秘なる山 ルギア"]) == "ポケモンカードe ルギア"
+    assert pokeca_sold_keyword("eカード ルギア", ["ポケモンカード eカード ルギア"]) == "eカード ルギア"
+    spaced = ["ポケモンカード e ルギア", "ポケモンカードe ルギア 1ED", "eカード ルギア"]
+    assert pokeca_sold_keyword("eカード ルギア", spaced) == "ポケモンカードe ルギア"
+    assert pokeca_sold_keyword("201/165", ["リザードンex SAR 201/165"]) == "201/165 SAR"
+    assert pokeca_sold_keyword("旧裏 リザードン", ["旧裏 リザードン"]) == "旧裏 リザードン"
+    # 名前を指定したら、クリスタルタイプや旧裏は別のカード
+    query = text.tokens("ポケモンカードe リザードン")
+    assert POKECA.exclusion_reason("ポケモンカードe リザードン クリスタルタイプ", query) == "別のカード"
+    assert POKECA.exclusion_reason("旧裏 リザードン", query) == "別のカード"
+    assert POKECA.exclusion_reason("ポケモンカードe リザードン 1ED", query) is None
 
 
 @pytest.mark.parametrize(
