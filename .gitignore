@@ -1,0 +1,13 @@
+# データ（J-Quants の利用規約上、再配布不可）と生成物はコミットしない
+data/
+output/
+*.db
+*.sqlite
+*.sqlite3
+*.parquet
+config/local.toml
+.env
+
+__pycache__/
+.pytest_cache/
+*.egg-info/

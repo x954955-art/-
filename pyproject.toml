@@ -1,0 +1,14 @@
+[project]
+name = "tdnet-edge"
+version = "0.1.0"
+description = "TDnetの悪材料に見える開示後のドリフトを検証するイベントスタディ"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26", "pandas>=2.1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+scanner = ["tdnet>=0.3.2"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

@@ -1,0 +1,52 @@
+# このファイルを config/local.toml にコピーして手元の環境に合わせて書き換える（local.toml は git 管理外）
+#   cp config/example.toml config/local.toml
+# テーブル名・列名は scripts/inspect_db.py の結果を見て埋める。
+
+[events]
+# J-Quants TDnet アドオンの一括ダウンロード（CSV / parquet。複数可・ワイルドカード可）
+paths = ["data/tdnet/*.csv"]
+
+# 列名の自動判定がうまくいかない場合だけ指定する
+# [events.columns]
+# code = "Code"
+# title = "Title"
+# date = "Date"
+# time = "Time"
+
+[prices]
+db = "~/data/stock.db"
+table = "daily_quotes"
+code = "Code"
+date = "Date"
+open = "Open"
+close = "Close"
+volume = "Volume"
+
+# 分割調整: "factor"（J-Quants 形式の調整係数列）/ "adjusted"（調整済みの列を使う）/ "none"
+adjustment = "factor"
+factor = "AdjustmentFactor"
+# adjustment = "adjusted" のとき
+# adj_open = "AdjustmentOpen"
+# adj_close = "AdjustmentClose"
+# raw_close = "Close"          # 時価総額の計算用（未調整の終値）
+
+# 時価総額: どちらかがあれば時価総額帯で集計できる（無ければ「不明」）
+# mcap = "MarketCap"           # その日の時価総額（円）
+# shares = "SharesOutstanding" # その時点の発行済株式数（未調整の終値と掛ける）
+
+[topix]
+# "code": 価格テーブル内の銘柄で代用（1306 = TOPIX連動ETF）/ "table": 別テーブル
+source = "code"
+code = "1306"
+# source = "table" のとき
+# table = "indices"
+# date = "Date"
+# open = "Open"
+# close = "Close"
+# where = "Code = '0000'"
+
+[study]
+horizons = [20, 60, 120, 250]
+cooldown_days = 20   # 同一銘柄の後続イベントを間引く営業日数
+max_wait_days = 5    # 売買不成立が続くとき何営業日まで約定を待つか
+holdout_start = ""   # 空なら初回実行時に「開示データ最終日の1年前」で決めて state/holdout.json に固定
