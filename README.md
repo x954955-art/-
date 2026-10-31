@@ -15,8 +15,8 @@
 |---|---|---|
 | 株価（日足・分割調整済み、上場廃止銘柄を含む） | エントリー・出口・時価総額 | 手元の SQLite |
 | TOPIX（始値・終値） | 超過リターンの基準 | DB 内の指数データ、または 1306（TOPIX 連動 ETF）で代用 |
-| 過去の開示一覧（日時・コード・タイトル） | イベント | J-Quants TDnet アドオンの一括ダウンロード（CSV） |
-| 発行済株式数（または時価総額） | 時価総額帯 | DB にあればそれを使う。なければ J-Quants の財務データ |
+| 過去の開示一覧（日時・コード・タイトル） | イベント | やのしんWEB-API（`tdnet` ライブラリと同じ取得元、無料）を `scripts/fetch_tdnet_history.py` で日ごとに取得。J-Quants TDnet アドオンの CSV も読める |
+| 発行済株式数（または時価総額） | 時価総額帯 | DB にあればそれを使う。なければ決算短信の XBRL（`tdnet` ライブラリ）から取得 |
 
 ## 使い方
 
@@ -29,7 +29,11 @@ python scripts/inspect_db.py /path/to/stock.db
 # 2) 設定を作る（テーブル名・列名を 1) の結果に合わせる）
 cp config/example.toml config/local.toml
 
-# 3) Phase 1（学習期間だけを集計して表示）
+# 3) 過去の開示一覧を取得（まず試し取りで、どこまで遡れるか・1日の上限で切れていないかを確認）
+python scripts/fetch_tdnet_history.py --probe --start 2016-01-01
+python scripts/fetch_tdnet_history.py --start 2021-10-01   # 1秒1リクエスト。中断しても再実行で続きから
+
+# 4) Phase 1（学習期間だけを集計して表示）
 python scripts/phase1.py --config config/local.toml
 
 # テスト
@@ -81,5 +85,6 @@ pytest
 - 日足しかないため、立会中の開示は「当日終値」で近似（開示後に約定がなかった場合は開示前の価格になりうる）
 - ストップ安での買いは比例配分で全量約定しない可能性がある（考慮していない）
 - 売買コスト（小型株はスプレッドが広い）は未控除
-- J-Quants のデータは再配布不可（個人利用限定）。データ・明細は git にコミットしない
+- やのしんWEB-API は無料の個人運営サービス。間隔を空けて取得し、取得済みの日はキャッシュを使う
+- 開示データ・株価・明細は git にコミットしない（J-Quants のデータは再配布不可）
 - `tdnet` ライブラリ（Phase 3 で使用予定）は AGPL v3

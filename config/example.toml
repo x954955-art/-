@@ -3,7 +3,8 @@
 # テーブル名・列名は scripts/inspect_db.py の結果を見て埋める。
 
 [events]
-# J-Quants TDnet アドオンの一括ダウンロード（CSV / parquet。複数可・ワイルドカード可）
+# 開示一覧（CSV / parquet。複数可・ワイルドカード可）
+# scripts/fetch_tdnet_history.py の出力 data/tdnet/yanoshin_events.csv をそのまま読める。J-Quants の CSV も可
 paths = ["data/tdnet/*.csv"]
 
 # 列名の自動判定がうまくいかない場合だけ指定する
