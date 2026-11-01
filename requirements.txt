@@ -1,0 +1,5 @@
+numpy>=1.26
+pandas>=2.1
+pytest>=8
+# Phase 3（日次スキャン）と XBRL 解析で使う。Python 3.12 以上が必要
+# tdnet>=0.3.2

@@ -161,6 +161,9 @@ def inspect_code_date_table(con, table, code_col, date_col, out):
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):  # Windows で出力をパイプしても日本語が化けないように
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
     ap.add_argument("db", help="SQLiteファイルのパス")
     ap.add_argument("--max-tables", type=int, default=30, help="詳しく調べるテーブル数の上限")
@@ -170,7 +173,7 @@ def main() -> int:
     if not path.exists():
         print(f"ファイルが見つかりません: {path}")
         return 1
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    con = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)  # Windows のパスも可
     cur = con.cursor()
     out: list[str] = []
     out.append(f"# DB構造: {path.name}（{path.stat().st_size / 1e9:.2f} GB, SQLite {sqlite3.sqlite_version}）")

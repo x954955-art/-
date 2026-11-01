@@ -72,36 +72,38 @@ class PricePanel:
         tp = tp.dropna(subset=["close"]).sort_values("date").drop_duplicates("date", keep="last")
         cal = pd.DatetimeIndex(tp["date"])
 
-        px = prices.copy()
-        px["code"] = px["code"].map(normalize_code)
-        px["date"] = pd.to_datetime(px["date"]).dt.normalize()
-        px = px[px["date"].isin(cal)]
-        px = px.drop_duplicates(["code", "date"], keep="last")
-        for col in ("open", "close"):
-            px[col] = pd.to_numeric(px[col], errors="coerce")
-            px.loc[px[col] <= 0, col] = np.nan  # 売買不成立を0で埋めているDBへの対策
+        # pivot は大きなデータでメモリを食うので、行列の位置に直接書き込む（同じ銘柄・日付は後の行で上書き）
+        raw = prices["code"].astype(str)
+        norm = {c: normalize_code(c) for c in pd.unique(raw)}
+        code_n = raw.map(norm).to_numpy()
+        di = cal.get_indexer(pd.to_datetime(prices["date"]).dt.normalize())
+        keep = di >= 0
+        codes = pd.Index(sorted(set(code_n[keep])))
+        ci = codes.get_indexer(code_n[keep])
+        di = di[keep]
+        shape = (len(cal), len(codes))
 
-        def wide(col: str) -> pd.DataFrame:
-            return px.pivot(index="date", columns="code", values=col).reindex(cal)
+        def fill(col: str) -> np.ndarray:
+            arr = np.full(shape, np.nan)
+            arr[di, ci] = pd.to_numeric(prices[col], errors="coerce").to_numpy(dtype=float)[keep]
+            return arr
 
-        close_w = wide("close")
-        codes = close_w.columns
-        open_w = wide("open").reindex(columns=codes)
-        if "volume" in px:
-            vol = wide("volume").reindex(columns=codes).to_numpy(dtype=float)
-            # 行が存在しない日は出来高0（売買不成立）とみなす
-            vol = np.where(np.isnan(vol) & np.isnan(close_w.to_numpy(dtype=float)), 0.0, vol)
+        open_, close = fill("open"), fill("close")
+        open_[open_ <= 0] = np.nan  # 売買不成立を0で埋めているDBへの対策
+        close[close <= 0] = np.nan
+        if "volume" in prices:
+            vol = fill("volume")
+            vol[np.isnan(vol) & np.isnan(close)] = 0.0  # 行が存在しない日は売買不成立
         else:
-            vol = np.full(close_w.shape, np.nan)
-        mcap = wide("mcap").reindex(columns=codes).to_numpy(dtype=float) if "mcap" in px else None
+            vol = np.full(shape, np.nan)
         t_open = tp["open"].to_numpy(dtype=float) if "open" in tp else np.full(len(cal), np.nan)
         return cls(
             dates=cal.values.astype("datetime64[D]"),
-            codes=pd.Index(codes),
-            open=open_w.to_numpy(dtype=float),
-            close=close_w.to_numpy(dtype=float),
+            codes=codes,
+            open=open_,
+            close=close,
             volume=vol,
             topix_open=t_open,
             topix_close=tp["close"].to_numpy(dtype=float),
-            mcap=mcap,
+            mcap=fill("mcap") if "mcap" in prices else None,
         )

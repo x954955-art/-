@@ -27,7 +27,7 @@ from tdnet_edge.panel import PricePanel  # noqa: E402
 def resolve_holdout(cfg_value: str | None, data_end: pd.Timestamp, state_path: Path) -> pd.Timestamp:
     """検証期間の開始日。一度決めたら state/holdout.json に固定して動かさない。"""
     if state_path.exists():
-        saved = pd.Timestamp(json.loads(state_path.read_text())["holdout_start"])
+        saved = pd.Timestamp(json.loads(state_path.read_text(encoding="utf-8"))["holdout_start"])
         if cfg_value and pd.Timestamp(cfg_value) != saved:
             sys.exit(f"設定の holdout_start={cfg_value} が固定済みの {saved.date()} と違います（state/holdout.json）。")
         return saved
@@ -38,12 +38,16 @@ def resolve_holdout(cfg_value: str | None, data_end: pd.Timestamp, state_path: P
             {"holdout_start": str(hs.date()), "data_end": str(data_end.date()), "decided_at": datetime.now().isoformat(timespec="seconds")},
             ensure_ascii=False,
             indent=2,
-        )
+        ),
+        encoding="utf-8",
     )
     return hs
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):  # Windows で出力をパイプしても日本語が化けないように
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(ROOT / "config" / "local.toml"))
     ap.add_argument("--out", default=str(ROOT / "output" / "phase1"))

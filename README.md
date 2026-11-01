@@ -1,5 +1,7 @@
 # TDnet「悪材料に見える開示」イベントスタディ
 
+> PC 上の Claude で続きを行う場合は [HANDOFF.md](HANDOFF.md) を参照。
+
 撤退・閉店・減損などの「悪材料に見える開示」の後、利益改善がまだ株価に織り込まれていない小型株を拾えるかを検証する。
 過去データでエッジが確認できた場合だけ、毎日の自動スキャナー（Phase 3）にする。
 
@@ -21,7 +23,7 @@
 ## 使い方
 
 ```bash
-pip install -e ".[dev]"
+pip install -r requirements.txt
 
 # 1) DB の構造を調べる（メタ情報だけを表示）
 python scripts/inspect_db.py /path/to/stock.db

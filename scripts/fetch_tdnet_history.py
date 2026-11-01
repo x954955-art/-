@@ -135,6 +135,9 @@ def report(caches: list[dict], failed: list[date], limit: int) -> str:
 
 
 def main() -> int:
+    for stream in (sys.stdout, sys.stderr):  # Windows で出力をパイプしても日本語が化けないように
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", help="開始日 YYYY-MM-DD（既定: 終了日の5年前）")
     ap.add_argument("--end", default=None, help="終了日 YYYY-MM-DD（既定: 昨日）")

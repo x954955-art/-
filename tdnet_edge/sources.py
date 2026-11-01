@@ -129,13 +129,18 @@ def adjustment_multiplier(df: pd.DataFrame) -> pd.Series:
         rev = x.iloc[::-1].cumprod().iloc[::-1]
         return rev.shift(-1).fillna(1.0)
 
-    return f.groupby(df["code"], sort=False).transform(per_code)
+    return f.groupby(df["code"], sort=False, observed=True).transform(per_code)
+
+
+def connect_ro(path: str | Path) -> sqlite3.Connection:
+    """読み取り専用で開く。Windows のパス（C:\\...、日本語、空白）も URI に正しく変換する。"""
+    return sqlite3.connect(Path(path).expanduser().resolve().as_uri() + "?mode=ro", uri=True)
 
 
 def load_prices_sqlite(cfg: dict, codes: set[str], start: pd.Timestamp, end: pd.Timestamp) -> tuple[pd.DataFrame, pd.DataFrame]:
     """設定 [prices] [topix] に従って株価と TOPIX を読み込む。end より後の日付は読まない。"""
     p, t = cfg["prices"], cfg["topix"]
-    con = sqlite3.connect(f"file:{Path(p['db']).expanduser()}?mode=ro", uri=True)
+    con = connect_ro(p["db"])
     table, c_date = p["table"], p["date"]
     sample = con.execute(f"SELECT {_q(c_date)} FROM {_q(table)} WHERE {_q(c_date)} IS NOT NULL LIMIT 1").fetchone()[0]
     lo, hi = _date_param(sample, start), _date_param(sample, end)
@@ -157,17 +162,23 @@ def load_prices_sqlite(cfg: dict, codes: set[str], start: pd.Timestamp, end: pd.
     sql = f"SELECT {cols} FROM {_q(table)} WHERE {_q(c_date)} >= ? AND {_q(c_date)} <= ?"
 
     tcode = normalize_code(t["code"]) if t.get("source", "code") == "code" else None
-    want = set(codes) | ({tcode} if tcode else set())
+    want = sorted(set(codes) | ({tcode} if tcode else set()))
     parts = []
+    # 大きな DB でもメモリを抑える: 塊ごとに必要な銘柄だけ残し、コードはカテゴリ型、数値は float にする
     for chunk in pd.read_sql_query(sql, con, params=(lo, hi), chunksize=500_000):
-        chunk["code"] = chunk["code"].map(normalize_code)
-        parts.append(chunk[chunk["code"].isin(want)])
+        raw = chunk["code"].astype(str)
+        norm = {c: normalize_code(c) for c in pd.unique(raw)}
+        code_n = raw.map(norm)
+        mask = code_n.isin(want).to_numpy()
+        chunk = chunk[mask].copy()
+        chunk["code"] = pd.Categorical(code_n.to_numpy()[mask], categories=want)
+        chunk["date"] = _to_datetime(chunk["date"])
+        for c in ("open", "close", "volume", "factor", "raw_close", "mcap", "shares"):
+            if c in chunk:
+                chunk[c] = pd.to_numeric(chunk[c], errors="coerce")
+        parts.append(chunk)
     px = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=list(sel))
-    px["date"] = _to_datetime(px["date"])
     px = px.dropna(subset=["date"]).sort_values(["code", "date"]).reset_index(drop=True)
-    for c in ("open", "close", "volume", "factor", "raw_close", "mcap", "shares"):
-        if c in px:
-            px[c] = pd.to_numeric(px[c], errors="coerce")
 
     raw_close = px["close"].copy() if mode != "adjusted" else px.get("raw_close")
     if mode == "factor":

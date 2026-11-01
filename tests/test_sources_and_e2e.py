@@ -111,3 +111,19 @@ def test_phase1_end_to_end(tmp_path):
     (tmp_path / "c2.toml").write_text(bad, encoding="utf-8")
     r2 = subprocess.run(cmd[:3] + [str(tmp_path / "c2.toml")] + cmd[4:], capture_output=True, text=True)
     assert r2.returncode != 0 and "固定済み" in (r2.stdout + r2.stderr)
+
+
+def test_connect_ro_handles_japanese_and_spaces(tmp_path):
+    d = tmp_path / "株価 データ #1"
+    d.mkdir()
+    db = d / "prices v2.sqlite"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE t(x)")
+    con.commit()
+    con.close()
+    ro = sources.connect_ro(db)
+    assert ro.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 0
+    with pytest.raises(sqlite3.OperationalError):  # 読み取り専用
+        ro.execute("INSERT INTO t VALUES (1)")
+    r = subprocess.run([sys.executable, str(ROOT / "scripts" / "inspect_db.py"), str(db)], capture_output=True, text=True)
+    assert r.returncode == 0 and "テーブル/ビュー数: 1" in r.stdout
