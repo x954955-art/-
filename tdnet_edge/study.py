@@ -73,6 +73,7 @@ def build_entries(events: pd.DataFrame, panel: PricePanel, mode: str = "first", 
                 mcap = panel.mcap[pre_i, pos] if panel.mcap is not None else np.nan
                 rec.update(
                     pos=pos,
+                    pre_idx=pre_i,
                     entry_idx=j,
                     entry_kind=kind,
                     entry_date=pd.Timestamp(panel.dates[j]),
@@ -89,16 +90,16 @@ def build_entries(events: pd.DataFrame, panel: PricePanel, mode: str = "first", 
     return res
 
 
-def merge_same_entry(entries: pd.DataFrame) -> pd.DataFrame:
+def merge_same_entry(entries: pd.DataFrame, keywords: list[str] = KEYWORDS) -> pd.DataFrame:
     """同じ銘柄・同じエントリー時点（日＋始値/終値）の開示を1イベントにまとめる。
 
-    タグは和集合、時刻は最も早いもの。どの開示もエントリー前に出ているので先読みにならない。
+    タグは和集合（keywords の順）、時刻は最も早いもの。どの開示もエントリー前に出ているので先読みにならない。
     寄付前の開示（始値で買う）と同日の立会中の開示（終値で買う）は別イベントのまま残す。
     """
     ok = entries[entries["status"] == "ok"].sort_values("disclosed_at")
     agg = ok.groupby(["code", "entry_idx", "entry_kind"], sort=False).agg(
         first=("disclosed_at", "idxmin"),
-        tags=("tags", lambda s: tuple(k for k in KEYWORDS if any(k in t for t in s))),
+        tags=("tags", lambda s: tuple(k for k in keywords if any(k in t for t in s))),
         n_disclosures=("disclosed_at", "size"),
     )
     base = ok.loc[agg["first"].to_numpy()].drop(columns=["tags"]).reset_index(drop=True)

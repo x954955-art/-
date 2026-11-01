@@ -96,7 +96,7 @@ def test_phase1_end_to_end(tmp_path):
 
     state = tmp_path / "state" / "holdout.json"
     cmd = [sys.executable, str(ROOT / "scripts" / "phase1.py"), "--config", str(tmp_path / "c.toml"), "--out", str(tmp_path / "out"), "--state", str(state)]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")  # スクリプトは UTF-8 で出力する（Windows の既定は cp932）
     assert r.returncode == 0, r.stderr
     assert "## 件数の流れ" in r.stdout and "5営業日後" in r.stdout and "キーワード" in r.stdout
     hs = json.loads(state.read_text())["holdout_start"]
@@ -109,7 +109,7 @@ def test_phase1_end_to_end(tmp_path):
     cfg["study"]["holdout_start"] = "2023-02-01"
     bad = (tmp_path / "c.toml").read_text().replace('holdout_start = ""', 'holdout_start = "2023-02-01"')
     (tmp_path / "c2.toml").write_text(bad, encoding="utf-8")
-    r2 = subprocess.run(cmd[:3] + [str(tmp_path / "c2.toml")] + cmd[4:], capture_output=True, text=True)
+    r2 = subprocess.run(cmd[:3] + [str(tmp_path / "c2.toml")] + cmd[4:], capture_output=True, text=True, encoding="utf-8")
     assert r2.returncode != 0 and "固定済み" in (r2.stdout + r2.stderr)
 
 
@@ -125,5 +125,5 @@ def test_connect_ro_handles_japanese_and_spaces(tmp_path):
     assert ro.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 0
     with pytest.raises(sqlite3.OperationalError):  # 読み取り専用
         ro.execute("INSERT INTO t VALUES (1)")
-    r = subprocess.run([sys.executable, str(ROOT / "scripts" / "inspect_db.py"), str(db)], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, str(ROOT / "scripts" / "inspect_db.py"), str(db)], capture_output=True, text=True, encoding="utf-8")
     assert r.returncode == 0 and "テーブル/ビュー数: 1" in r.stdout

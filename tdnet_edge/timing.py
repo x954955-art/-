@@ -63,6 +63,8 @@ def scan_next_open(disclosed_at: pd.Timestamp, dates: np.ndarray, scan_time: tim
     """
     d = disclosed_at.date()
     i, trading = _locate(dates, d)
+    if i == 0 and not trading:
+        return 0, OPEN, -1  # カレンダーより前の開示（データ範囲外。初日のスキャンで拾ったことにしない）
     if trading and disclosed_at.time() < scan_time:
         scan_idx = i
     else:

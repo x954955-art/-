@@ -15,7 +15,7 @@
 
 | データ | 用途 | 入手先 |
 |---|---|---|
-| 株価（日足・分割調整済み、上場廃止銘柄を含む） | エントリー・出口・時価総額 | 手元の SQLite |
+| 株価（日足・分割調整済み、上場廃止銘柄を含む） | エントリー・出口・時価総額 | 手元の SQLite。なければ J-Quants（Light 以上）から `scripts/fetch_jquants.py` で SQLite に取り込む |
 | TOPIX（始値・終値） | 超過リターンの基準 | DB 内の指数データ、または 1306（TOPIX 連動 ETF）で代用 |
 | 過去の開示一覧（日時・コード・タイトル） | イベント | やのしんWEB-API（`tdnet` ライブラリと同じ取得元、無料）を `scripts/fetch_tdnet_history.py` で日ごとに取得。J-Quants TDnet アドオンの CSV も読める |
 | 発行済株式数（または時価総額） | 時価総額帯 | DB にあればそれを使う。なければ決算短信の XBRL（`tdnet` ライブラリ）から取得 |
@@ -24,6 +24,9 @@
 
 ```bash
 pip install -r requirements.txt
+
+# 0) 株価 DB がなければ J-Quants から取り込む（API キーは .env に JQUANTS_API_KEY=...。Light 以上は --bulk で全期間）
+python scripts/fetch_jquants.py --bulk
 
 # 1) DB の構造を調べる（メタ情報だけを表示）
 python scripts/inspect_db.py /path/to/stock.db
@@ -89,4 +92,5 @@ pytest
 - 売買コスト（小型株はスプレッドが広い）は未控除
 - やのしんWEB-API は無料の個人運営サービス。間隔を空けて取得し、取得済みの日はキャッシュを使う
 - 開示データ・株価・明細は git にコミットしない（J-Quants のデータは再配布不可）
+- J-Quants のデータは私的利用のみ。解約して請求期間が終わったら、取得したデータと複製をすべて消す（利用規約第7条）
 - `tdnet` ライブラリ（Phase 3 で使用予定）は AGPL v3

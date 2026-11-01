@@ -51,3 +51,10 @@ def test_pre_close_is_always_before_disclosure():
 def test_scan_next_open(ts, entry_day, pre_day):
     i, k, pre = scan_next_open(pd.Timestamp(ts), CAL)
     assert (i, k, pre) == (IDX[entry_day], OPEN, IDX[pre_day])
+
+
+def test_disclosure_before_calendar_is_out_of_range():
+    """株価データより前の開示を、データ初日に買ったことにしない（どちらのモードでも）。"""
+    for f in (first_executable, scan_next_open):
+        _, _, pre = f(pd.Timestamp("2009-10-05 15:00"), CAL)
+        assert pre < 0
