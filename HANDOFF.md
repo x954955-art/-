@@ -32,6 +32,9 @@ git --version
 ```
 
 ### 1. コードを取得してテスト
+コマンドは PowerShell 用。Git Bash で実行する場合はパスを `/` 区切り（`.venv/Scripts/python`）にする。
+git が無い場合は https://github.com/x954955-art/-/archive/refs/heads/claude/sleepy-cerf-apvst4.zip を
+ダウンロードしてこのフォルダに展開する（中身がフォルダ直下に来るように）。
 ```
 git clone -b claude/sleepy-cerf-apvst4 https://github.com/x954955-art/- .
 python -m venv .venv
